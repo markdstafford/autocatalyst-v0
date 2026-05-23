@@ -2,7 +2,9 @@ import { PassThrough } from 'node:stream';
 import { describe, it, expect, test, vi } from 'vitest';
 import { ClaudeAgentSdkAgentRunner, claudeSdkMessageDiagnostic, redactSecrets } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
+import type { AgentProfile } from '../../../src/types/ai.js';
 import type { Counter, Histogram, Meter } from '@opentelemetry/api';
+import type { RequestLogOptions, AnthropicBetaHeaderFilterProxy } from '../../../src/adapters/anthropic/anthropic-beta-header-filter-proxy.js';
 
 async function collect(events: AsyncIterable<AgentRunEvent>): Promise<AgentRunEvent[]> {
   const collected: AgentRunEvent[] = [];
@@ -754,5 +756,97 @@ describe('claudeSdkMessageDiagnostic', () => {
     expect(redacted).not.toContain('github_pat_11ABCDEF');
     expect(redacted).not.toContain('xapp-1-abc-123');
     expect(redacted).not.toContain('tok123');
+  });
+});
+
+describe('ClaudeAgentSdkAgentRunner — request log options', () => {
+  it('passes requestLog to startProxy when profile has base_url and strip values', async () => {
+    const requestLog: RequestLogOptions = { logDir: '/tmp/test-request-logs' };
+    const capturedOptions: unknown[] = [];
+
+    const mockStartProxy = vi.fn(async (_targetBaseUrl: string, opts: unknown): Promise<AnthropicBetaHeaderFilterProxy> => {
+      capturedOptions.push(opts);
+      const { createServer } = await import('node:http');
+      const server = createServer();
+      server.listen(0, '127.0.0.1');
+      await new Promise<void>(r => server.once('listening', r));
+      const address = server.address() as { port: number };
+      return {
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        server,
+        close: async () => {
+          server.close();
+          await new Promise<void>(r => server.once('close', r));
+        },
+      };
+    });
+
+    const runner = new ClaudeAgentSdkAgentRunner({
+      queryFn: async function* () {},
+      requestLog,
+      startProxy: mockStartProxy,
+    });
+
+    const profile: AgentProfile = {
+      id: 'test-profile',
+      provider: 'anthropic',
+      base_url: 'http://127.0.0.1:9999',
+      anthropic_beta_header_filter: { strip: ['some-beta-2025-01-01'] },
+    };
+
+    try {
+      for await (const _ of runner.run({ route: { task: 'test' }, working_directory: '/tmp', prompt: 'test', profile })) {}
+    } catch {
+      // expected — mock queryFn returns immediately
+    }
+
+    await runner.close();
+
+    expect(mockStartProxy).toHaveBeenCalledOnce();
+    const passedOpts = capturedOptions[0] as { requestLog?: RequestLogOptions };
+    expect(passedOpts.requestLog).toEqual(requestLog);
+  });
+
+  it('does not pass requestLog when runner has no requestLog option', async () => {
+    const capturedOptions: unknown[] = [];
+
+    const mockStartProxy = vi.fn(async (_targetBaseUrl: string, opts: unknown): Promise<AnthropicBetaHeaderFilterProxy> => {
+      capturedOptions.push(opts);
+      const { createServer } = await import('node:http');
+      const server = createServer();
+      server.listen(0, '127.0.0.1');
+      await new Promise<void>(r => server.once('listening', r));
+      const address = server.address() as { port: number };
+      return {
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        server,
+        close: async () => {
+          server.close();
+          await new Promise<void>(r => server.once('close', r));
+        },
+      };
+    });
+
+    const runner = new ClaudeAgentSdkAgentRunner({
+      queryFn: async function* () {},
+      startProxy: mockStartProxy,
+    });
+
+    const profile: AgentProfile = {
+      id: 'test-profile',
+      provider: 'anthropic',
+      base_url: 'http://127.0.0.1:9999',
+      anthropic_beta_header_filter: { strip: ['some-beta-2025-01-01'] },
+    };
+
+    try {
+      for await (const _ of runner.run({ route: { task: 'test' }, working_directory: '/tmp', prompt: 'test', profile })) {}
+    } catch {}
+
+    await runner.close();
+
+    expect(mockStartProxy).toHaveBeenCalledOnce();
+    const passedOpts = capturedOptions[0] as { requestLog?: RequestLogOptions };
+    expect(passedOpts.requestLog).toBeUndefined();
   });
 });
