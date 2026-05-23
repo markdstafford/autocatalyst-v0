@@ -398,4 +398,41 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     expect(result).toEqual({ status: 'reviewing_implementation' });
     expect(deps.implFeedbackPage?.create).toHaveBeenCalled();
   });
+
+  it('posts a labeled testing-guide link when PublishedImplementationReview includes label and url', async () => {
+    const { handler, deps } = makeHandler({
+      implFeedbackPage: {
+        create: vi.fn().mockResolvedValue({
+          id: 'feedback-page-id',
+          url: 'https://example.test/feedback-page-id',
+          label: 'View testing guide',
+        }),
+        updateStatus: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun();
+    await handler.handle(run, makeFeedback());
+    expect(deps.postMessage).toHaveBeenCalledWith(
+      TEST_CONVERSATION,
+      'Implementation complete. View testing guide — https://example.test/feedback-page-id',
+    );
+  });
+
+  it('falls back to url-only completion message when label is absent from PublishedImplementationReview', async () => {
+    const { handler, deps } = makeHandler({
+      implFeedbackPage: {
+        create: vi.fn().mockResolvedValue({
+          id: 'feedback-page-id',
+          url: 'https://example.test/feedback-page-id',
+        }),
+        updateStatus: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun();
+    await handler.handle(run, makeFeedback());
+    expect(deps.postMessage).toHaveBeenCalledWith(
+      TEST_CONVERSATION,
+      'Implementation complete. Feedback page: https://example.test/feedback-page-id',
+    );
+  });
 });

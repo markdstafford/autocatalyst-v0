@@ -218,6 +218,7 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
     return {
       id: page_id,
       url: `https://notion.so/${page_id.replace(/-/g, '')}`,
+      label: 'View testing guide',
     };
   }
 

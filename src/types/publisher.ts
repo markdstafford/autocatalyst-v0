@@ -20,6 +20,7 @@ export interface ArtifactPublication {
   id: string;
   url?: string;
   provider?: string;
+  label?: string;
 }
 
 export interface ArtifactCommentAnchor {

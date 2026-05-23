@@ -127,6 +127,7 @@ export class ImplementationStartHandler {
     this.deps.persist();
 
     let feedbackPageUrl: string | undefined;
+    let feedbackPageLabel: string | undefined;
     try {
       // Log legacy warning if structured output is missing
       if (!reviewedResult.review_summary || !reviewedResult.testing_steps) {
@@ -150,6 +151,7 @@ export class ImplementationStartHandler {
       run.impl_feedback_ref = publishedReview.id;
       this.deps.persist();
       feedbackPageUrl = publishedReview.url;
+      feedbackPageLabel = publishedReview.label;
     } catch (err) {
       this.deps.logger.error(
         { event: 'run.feedback_page_failed', run_id: run.id, error: String(err) },
@@ -158,7 +160,9 @@ export class ImplementationStartHandler {
     }
 
     const completionMsg = feedbackPageUrl
-      ? `Implementation complete. Feedback page: ${feedbackPageUrl}`
+      ? feedbackPageLabel
+        ? `Implementation complete. ${feedbackPageLabel} \u2014 ${feedbackPageUrl}`
+        : `Implementation complete. Feedback page: ${feedbackPageUrl}`
       : 'Implementation complete. (Could not create feedback page \u2014 check logs.)';
     try {
       await this.deps.postMessage(feedback.conversation, completionMsg);
