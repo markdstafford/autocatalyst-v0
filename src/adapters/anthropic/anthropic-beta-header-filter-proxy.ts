@@ -98,6 +98,10 @@ export async function startAnthropicBetaHeaderFilterProxy(
     throw new Error('Anthropic beta header filter proxy did not bind to a TCP port');
   }
 
+  if (requestLog) {
+    await mkdir(requestLog.logDir, { recursive: true, mode: 0o700 });
+  }
+
   const port = address.port;
   logger.info(
     { event: 'proxy.started', port, strip_beta_count: stripBetaValues.size },
@@ -165,8 +169,6 @@ async function dumpRequest(
 ): Promise<void> {
   const start = Date.now();
   try {
-    await mkdir(requestLog.logDir, { recursive: true, mode: 0o700 });
-
     const rawHeaders: Record<string, string> = {};
     headers.forEach((value, name) => { rawHeaders[name] = value; });
     const redactedHeaders = redactHeaders(rawHeaders);
@@ -182,8 +184,9 @@ async function dumpRequest(
       }
     }
 
+    const now = new Date();
     const record: Record<string, unknown> = {
-      timestamp: new Date().toISOString(),
+      timestamp: now.toISOString(),
       method,
       url: targetUrl.toString(),
       headers: redactedHeaders,
@@ -191,7 +194,7 @@ async function dumpRequest(
     if (parsedBody !== undefined) record['body'] = parsedBody;
     if (bodyRaw !== undefined) record['body_raw'] = bodyRaw;
 
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const ts = now.toISOString().replace(/[:.]/g, '-');
     const suffix = randomBytes(4).toString('hex');
     const filename = `${ts}-${suffix}.json`;
     const filePath = join(requestLog.logDir, filename);
@@ -228,7 +231,7 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
 }
 
 function redactCredentialValue(value: string): string {
-  if (value.length <= 8) return value;
+  if (value.length <= 8) return '[redacted]';
   return `${value.slice(0, 4)}redacted${value.slice(-4)}`;
 }
 

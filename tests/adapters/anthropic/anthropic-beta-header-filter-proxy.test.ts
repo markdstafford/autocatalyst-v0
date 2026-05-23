@@ -274,7 +274,7 @@ describe('Anthropic beta header filter proxy', () => {
       expect(readdirSync(logDir)).toHaveLength(0);
     });
 
-    test('dump failure logs proxy.request_dump_failed and still forwards request', async () => {
+    test('throws at startup when logDir cannot be created', async () => {
       const upstream = createServer((req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ forwarded: true }));
@@ -282,36 +282,16 @@ describe('Anthropic beta header filter proxy', () => {
       servers.push(upstream);
       const upstreamPort = await listen(upstream);
 
-      const dest = new PassThrough();
-      const lines: string[] = [];
-      dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
-
       // Create a file at the logDir path so mkdir fails (can't create dir where file exists)
       rmSync(logDir, { recursive: true });
       writeFileSync(logDir, 'not-a-dir');
 
-      const proxy = await startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
-        stripBetaValues: [],
-        requestLog: { logDir },
-        logDestination: dest,
-      });
-      servers.push(proxy.server);
-
-      const response = await fetch(`${proxy.baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-      });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ forwarded: true });
-
-      await proxy.close();
-      dest.end();
-      await new Promise(r => dest.on('finish', r));
-
-      const parsed = lines.map(l => JSON.parse(l) as Record<string, unknown>);
-      const failEvent = parsed.find(l => l['event'] === 'proxy.request_dump_failed');
-      expect(failEvent).toBeDefined();
+      await expect(
+        startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
+          stripBetaValues: [],
+          requestLog: { logDir },
+        }),
+      ).rejects.toThrow();
     });
   });
 });
