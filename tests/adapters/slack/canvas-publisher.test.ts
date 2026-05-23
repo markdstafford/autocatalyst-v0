@@ -79,6 +79,7 @@ describe('ArtifactPublisher.createArtifact', () => {
     expect(result).toEqual({
       id: 'CANVAS999',
       url: 'https://testworkspace.slack.com/docs/T123/CANVAS999',
+      label: 'View spec',
     });
     expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
   });
@@ -109,7 +110,16 @@ describe('ArtifactPublisher.createArtifact', () => {
     expect(result).toEqual({
       id: 'CANVAS_XYZ',
       url: 'https://testworkspace.slack.com/docs/T123/CANVAS_XYZ',
+      label: 'View spec',
     });
+  });
+
+  it('returns label "View spec" as part of the publication result', async () => {
+    const mock = makeMockApp('CANVAS_LABEL');
+    const specPath = makeSpecFile();
+    const cp = new SlackCanvasPublisher(mock as unknown as App, { logDestination: nullDest });
+    const result = await cp.createArtifact(makeConversation(), makeArtifact(specPath));
+    expect(result.label).toBe('View spec');
   });
 
   it('throws if canvases.create rejects; postMessage is not called', async () => {

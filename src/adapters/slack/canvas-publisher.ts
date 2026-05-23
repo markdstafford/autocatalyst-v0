@@ -63,7 +63,7 @@ export class SlackCanvasPublisher implements ArtifactPublisher {
 
     const url = this.canvasUrl(canvas_id);
     this.logger.info({ event: 'canvas.created', channel_id, canvas_id }, 'Canvas created');
-    return { id: canvas_id, url };
+    return { id: canvas_id, url, label: 'View spec' };
   }
 
   async updateArtifact(canvas_id: string, artifact: Artifact, page_content?: string): Promise<void> {
