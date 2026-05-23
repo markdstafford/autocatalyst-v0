@@ -92,7 +92,7 @@ describe('createSetStatusHandler', () => {
 
     await handler(
       makeEvent({
-        messageText: 'implemneting',
+        args: ['implemneting'],
         inferred_context: { request_id: 'req-001' },
       }),
       reply,
@@ -115,7 +115,7 @@ describe('createSetStatusHandler', () => {
 
     await handler(
       makeEvent({
-        messageText: 'reviewing_implementation',
+        args: ['reviewing_implementation'],
         inferred_context: undefined,
       }),
       reply,
