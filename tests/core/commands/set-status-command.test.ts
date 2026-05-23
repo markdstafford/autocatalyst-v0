@@ -50,7 +50,7 @@ describe('createSetStatusHandler', () => {
 
     await handler(
       makeEvent({
-        messageText: 'reviewing_implementation',
+        args: ['reviewing_implementation'],
         inferred_context: { request_id: 'req-001' },
       }),
       reply,
@@ -65,7 +65,7 @@ describe('createSetStatusHandler', () => {
     expect(msg).toContain('persisted');
   });
 
-  it('stage text with mixed case and surrounding whitespace is normalized and accepted', async () => {
+  it('stage text with mixed case is normalized and accepted', async () => {
     const run = makeRun({ stage: 'implementing', request_id: 'req-001' });
     const findRunById = vi.fn().mockReturnValue(run);
     const overrideRunStage = vi.fn().mockReturnValue('updated');
@@ -74,7 +74,7 @@ describe('createSetStatusHandler', () => {
 
     await handler(
       makeEvent({
-        messageText: '  Reviewing_Implementation  ',
+        args: ['Reviewing_Implementation'],
         inferred_context: { request_id: 'req-001' },
       }),
       reply,
@@ -156,7 +156,7 @@ describe('createSetStatusHandler', () => {
 
     await handler(
       makeEvent({
-        messageText: 'implementing',
+        args: ['implementing'],
         inferred_context: { request_id: 'req-001' },
       }),
       reply,
@@ -189,25 +189,6 @@ describe('createSetStatusHandler', () => {
     const msg = reply.mock.calls[0][0] as string;
     expect(msg).toContain('failed');
     expect(msg).toContain('reviewing_implementation');
-  });
-
-  it('args take precedence over messageText', async () => {
-    const run = makeRun({ stage: 'implementing', request_id: 'req-001' });
-    const findRunById = vi.fn().mockReturnValue(run);
-    const overrideRunStage = vi.fn().mockReturnValue('updated');
-    const handler = createSetStatusHandler({ findRunById, overrideRunStage });
-    const reply = vi.fn().mockResolvedValue(undefined);
-
-    await handler(
-      makeEvent({
-        args: ['reviewing_implementation'],
-        messageText: 'speccing',
-        inferred_context: { request_id: 'req-001' },
-      }),
-      reply,
-    );
-
-    expect(overrideRunStage).toHaveBeenCalledWith('req-001', 'reviewing_implementation');
   });
 
   it('empty args and empty messageText → replies with usage error and valid stage list', async () => {
@@ -248,5 +229,27 @@ describe('createSetStatusHandler', () => {
     expect(overrideRunStage).not.toHaveBeenCalled();
     const msg = reply.mock.calls[0][0] as string;
     expect(msg).toContain('ac-set-status:');
+  });
+
+  it('empty args with messageText only → does not update run (messageText fallback removed)', async () => {
+    const run = makeRun({ stage: 'implementing', request_id: 'req-001' });
+    const findRunById = vi.fn().mockReturnValue(run);
+    const overrideRunStage = vi.fn();
+    const handler = createSetStatusHandler({ findRunById, overrideRunStage });
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(
+      makeEvent({
+        args: [],
+        messageText: 'reviewing_implementation',
+        inferred_context: { request_id: 'req-001' },
+      }),
+      reply,
+    );
+
+    expect(overrideRunStage).not.toHaveBeenCalled();
+    const msg = reply.mock.calls[0][0] as string;
+    expect(msg).toContain('ac-set-status:');
+    expect(msg).toContain('Valid stages');
   });
 });
