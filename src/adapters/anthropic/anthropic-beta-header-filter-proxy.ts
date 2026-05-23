@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -101,6 +101,7 @@ export async function startAnthropicBetaHeaderFilterProxy(
   if (requestLog) {
     try {
       await mkdir(requestLog.logDir, { recursive: true, mode: 0o700 });
+      await chmod(requestLog.logDir, 0o700);
     } catch (err) {
       server.close();
       throw err;

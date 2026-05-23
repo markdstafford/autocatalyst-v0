@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, statSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
@@ -272,6 +272,30 @@ describe('Anthropic beta header filter proxy', () => {
       expect(response.status).toBe(200);
       // logDir is a separate temp dir; it should be empty since requestLog was not set
       expect(readdirSync(logDir)).toHaveLength(0);
+    });
+
+    test('chmods pre-existing logDir to 0o700', async () => {
+      // Create the logDir with broad permissions before the proxy starts
+      rmSync(logDir, { recursive: true });
+      mkdirSync(logDir, { mode: 0o755 });
+
+      const upstream = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+      servers.push(upstream);
+      const upstreamPort = await listen(upstream);
+
+      const proxy = await startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
+        stripBetaValues: [],
+        requestLog: { logDir },
+      });
+      servers.push(proxy.server);
+      await proxy.close();
+
+      const stat = statSync(logDir);
+      // mode & 0o777 gives the permission bits only
+      expect(stat.mode & 0o777).toBe(0o700);
     });
 
     test('throws at startup when logDir cannot be created', async () => {
