@@ -16,6 +16,7 @@ export interface FeedbackItem {
 export interface PublishedImplementationReview {
   id: string;
   url?: string;
+  label?: string;
 }
 
 export interface ImplementationReviewInput {
