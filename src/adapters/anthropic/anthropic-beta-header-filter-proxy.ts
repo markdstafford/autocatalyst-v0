@@ -151,11 +151,22 @@ async function handleProxyRequest(
     await dumpRequest(targetUrl, req.method ?? 'GET', headers, body, requestLog, logger, dumpId);
   }
 
-  const response = await fetch(targetUrl, {
-    method: req.method,
-    headers,
-    body,
-  });
+  const fetchStart = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(targetUrl, {
+      method: req.method,
+      headers,
+      body,
+    });
+  } catch (fetchErr) {
+    if (requestLog && dumpId) {
+      await dumpResponseError(targetUrl, req.method ?? 'GET', dumpId, fetchStart, fetchErr, requestLog, logger);
+    }
+    throw fetchErr;
+  }
+
+  const headersTime = Date.now() - fetchStart;
 
   logger.debug(
     { event: 'proxy.request_proxied', method: req.method, upstream_status: response.status },
@@ -163,17 +174,97 @@ async function handleProxyRequest(
   );
 
   res.writeHead(response.status, response.statusText, responseHeaders(response.headers));
+
   if (!response.body) {
+    if (requestLog && dumpId) {
+      await dumpResponse(targetUrl, response, {
+        dumpId,
+        method: req.method ?? 'GET',
+        fetchStart,
+        headersTime,
+        firstByteTime: null,
+        bodyBytes: 0,
+        streamState: 'no_body',
+        captureChunks: [],
+        captureTruncated: false,
+      }, requestLog, logger);
+    }
     res.end();
     return;
   }
-  await new Promise<void>((resolve, reject) => {
-    Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
-      .on('error', reject)
-      .pipe(res)
-      .on('error', reject)
-      .on('finish', resolve);
-  });
+
+  const captureLimit = 64 * 1024;
+  const captureChunks: Buffer[] = [];
+  let captureSize = 0;
+  let captureTruncated = false;
+  let firstByteTime: number | null = null;
+  let bodyBytes = 0;
+  let streamState: 'completed' | 'interrupted' = 'completed';
+  let streamError: string | undefined;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
+        .on('error', (err: Error) => {
+          streamState = 'interrupted';
+          streamError = String(err);
+          reject(err);
+        })
+        .on('data', (chunk: Buffer) => {
+          if (firstByteTime === null) firstByteTime = Date.now() - fetchStart;
+          bodyBytes += chunk.byteLength;
+          if (!captureTruncated) {
+            const space = captureLimit - captureSize;
+            if (space > 0) {
+              captureChunks.push(space >= chunk.byteLength ? chunk : chunk.slice(0, space));
+              captureSize += Math.min(chunk.byteLength, space);
+              if (captureSize >= captureLimit) captureTruncated = true;
+            }
+          }
+          res.write(chunk);
+        })
+        .on('end', () => {
+          res.end();
+          resolve();
+        });
+      res.on('error', (err: Error) => {
+        streamState = 'interrupted';
+        streamError = String(err);
+        reject(err);
+      });
+    });
+  } catch (err) {
+    if (requestLog && dumpId) {
+      await dumpResponse(targetUrl, response, {
+        dumpId,
+        method: req.method ?? 'GET',
+        fetchStart,
+        headersTime,
+        firstByteTime,
+        bodyBytes,
+        streamState: 'interrupted',
+        captureChunks,
+        captureTruncated,
+        streamError: String(err),
+      }, requestLog, logger);
+    }
+    throw err;
+  }
+
+  if (requestLog && dumpId) {
+    await dumpResponse(targetUrl, response, {
+      dumpId,
+      method: req.method ?? 'GET',
+      fetchStart,
+      headersTime,
+      firstByteTime,
+      bodyBytes,
+      streamState,
+      captureChunks,
+      captureTruncated,
+      streamError,
+    }, requestLog, logger);
+  }
 }
 
 function generateDumpId(): string {
