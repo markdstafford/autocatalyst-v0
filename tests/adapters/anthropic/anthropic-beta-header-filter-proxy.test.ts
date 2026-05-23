@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, test } from 'vitest';
-import { startAnthropicBetaHeaderFilterProxy } from '../../../src/adapters/anthropic/anthropic-beta-header-filter-proxy.js';
 import {
+  startAnthropicBetaHeaderFilterProxy,
   redactResponseHeadersForDump,
   extractOutputTokens,
 } from '../../../src/adapters/anthropic/anthropic-beta-header-filter-proxy.js';
