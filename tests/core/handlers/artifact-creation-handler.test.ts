@@ -174,4 +174,56 @@ describe('ArtifactCreationHandler', () => {
     expect(deps.artifactPublisher.createArtifact).toHaveBeenCalled();
     expect(deps.failRun).not.toHaveBeenCalled();
   });
+
+  it('posts a labeled link message when ArtifactPublication includes label and url', async () => {
+    const { handler, deps } = makeHandler({
+      artifactPublisher: {
+        createArtifact: vi.fn().mockResolvedValue({
+          id: 'CANVAS001',
+          url: 'https://artifact.example.test/CANVAS001',
+          label: 'View spec',
+        }),
+        updateStatus: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun({ intent: 'idea' });
+    await handler.handle(run, makeRequest(), 'idea');
+    expect(deps.postMessage).toHaveBeenCalledWith(
+      TEST_CONVERSATION,
+      'Artifact ready for review: View spec — https://artifact.example.test/CANVAS001',
+    );
+  });
+
+  it('falls back to url-only message when label is absent', async () => {
+    const { handler, deps } = makeHandler({
+      artifactPublisher: {
+        createArtifact: vi.fn().mockResolvedValue({
+          id: 'CANVAS001',
+          url: 'https://artifact.example.test/CANVAS001',
+        }),
+        updateStatus: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun({ intent: 'idea' });
+    await handler.handle(run, makeRequest(), 'idea');
+    expect(deps.postMessage).toHaveBeenCalledWith(
+      TEST_CONVERSATION,
+      'Artifact ready for review: https://artifact.example.test/CANVAS001',
+    );
+  });
+
+  it('posts no publication link when url is absent', async () => {
+    const { handler, deps } = makeHandler({
+      artifactPublisher: {
+        createArtifact: vi.fn().mockResolvedValue({ id: 'CANVAS001' }),
+        updateStatus: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun({ intent: 'idea' });
+    await handler.handle(run, makeRequest(), 'idea');
+    expect(deps.postMessage).not.toHaveBeenCalledWith(
+      TEST_CONVERSATION,
+      expect.stringContaining('Artifact ready for review'),
+    );
+  });
 });

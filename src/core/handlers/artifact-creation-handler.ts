@@ -141,8 +141,11 @@ export class ArtifactCreationHandler {
 
   private async postArtifactPublication(conversation: ConversationRef, publication: ArtifactPublication): Promise<void> {
     if (!publication.url) return;
+    const linkText = publication.label
+      ? `${publication.label} — ${publication.url}`
+      : publication.url;
     try {
-      await this.deps.postMessage(conversation, `Artifact ready for review: ${publication.url}`);
+      await this.deps.postMessage(conversation, `Artifact ready for review: ${linkText}`);
     } catch (err) {
       this.deps.logger.warn(
         { event: 'artifact.publication_notify_failed', publication_ref: publication.id, error: String(err) },
