@@ -10,10 +10,8 @@ describe('requiredSkillsForRoute', () => {
 
   test('maps implementation and issue triage routes to their required skills', () => {
     expect(requiredSkillsForRoute({ task: 'issue.triage' })).toEqual(['mm:issue-triage']);
-    expect(requiredSkillsForRoute({ task: 'implementation.run' })).toEqual([
-      'superpowers:writing-plans',
-      'superpowers:subagent-driven-development',
-    ]);
+    expect(requiredSkillsForRoute({ task: 'implementation.plan' })).toEqual(['superpowers:writing-plans']);
+    expect(requiredSkillsForRoute({ task: 'implementation.run' })).toEqual(['superpowers:subagent-driven-development']);
   });
 
   test('leaves direct and non-skill routes empty', () => {

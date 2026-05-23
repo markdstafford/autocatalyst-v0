@@ -41,8 +41,11 @@ export interface OpenAIAgentSdkAgentRunnerOptions {
 }
 
 export function skillRefsForRoute(route: AgentRoute): AgentSkillRef[] {
+  if (route.task === 'implementation.plan') {
+    return ['superpowers:writing-plans'];
+  }
   if (route.task === 'implementation.run') {
-    return ['superpowers:writing-plans', 'superpowers:subagent-driven-development'];
+    return ['superpowers:subagent-driven-development'];
   }
   if (route.task === 'issue.triage') {
     return ['mm:issue-triage'];

@@ -69,6 +69,9 @@ function makeDeps() {
       commit: vi.fn().mockResolvedValue(undefined),
       updateStatus: vi.fn().mockResolvedValue(undefined),
     },
+    implementationPlanner: {
+      plan: vi.fn().mockResolvedValue({ status: 'complete', plan_path: '/ws/request-001/docs/superpowers/plans/implementation-plan.md' }),
+    },
     implementer: {
       implement: vi.fn().mockResolvedValue({
         status: 'complete',
@@ -137,6 +140,7 @@ describe('buildDefaultHandlerRegistry', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(run.stage).toBe('reviewing_implementation');
   });
@@ -344,6 +348,7 @@ describe('buildDefaultHandlerRegistry', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(run.stage).toBe('reviewing_implementation');
   });

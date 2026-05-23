@@ -84,7 +84,7 @@ describe('runtime AI routing policy', () => {
     expect(policy.resolve({ task: 'implementation.run' })).toMatchObject({
       id: 'implementation',
       provider: 'claude_agent_sdk',
-      required_skills: ['superpowers:writing-plans', 'superpowers:subagent-driven-development'],
+      required_skills: ['superpowers:subagent-driven-development'],
       plugins: undefined,
     });
   });

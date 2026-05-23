@@ -18,6 +18,8 @@ import type {
   ArtifactCreateResult,
   ArtifactRevisionResult,
   ImplementationAgent,
+  ImplementationPlanResult,
+  ImplementationPlanningAgent,
   ImplementationResult,
   ImplementationReviewFinding,
   ImplementationReviewResult,
@@ -234,9 +236,10 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
     telemetry?: { run_id?: string; request_id?: string },
+    plan_path?: string,
   ): Promise<ImplementationResult> {
     const resultFilePath = join(working_directory, '.autocatalyst', 'impl-result.json');
-    const prompt = buildImplementationPrompt(artifact_path, resultFilePath, additional_context);
+    const prompt = buildImplementationPrompt(artifact_path, resultFilePath, additional_context, plan_path);
     const route = { task: 'implementation.run' as const };
 
     this.logger.debug(
@@ -291,6 +294,78 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     });
     const result = parseImplementationResult(content, resultFilePath);
     this.logger.debug({ event: 'impl.agent_completed', status: result.status }, 'Agent implementation completed');
+    return result;
+  }
+}
+
+export class AgentRunnerImplementationPlanningAgent implements ImplementationPlanningAgent {
+  private readonly logger: pino.Logger;
+  private readonly readFileFn: ReadFileFn;
+
+  constructor(
+    private readonly runner: AgentRunner,
+    private readonly routingPolicy: AgentRoutingPolicy,
+    options?: AgentServiceOptions,
+  ) {
+    this.logger = createLogger('implementation-planning-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
+    this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
+  }
+
+  async plan(
+    artifact_path: string,
+    working_directory: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
+  ): Promise<ImplementationPlanResult> {
+    const resultFilePath = join(working_directory, '.autocatalyst', 'implementation-plan-result.json');
+    const prompt = buildImplementationPlanPrompt(artifact_path, working_directory, resultFilePath);
+    const route = { task: 'implementation.plan' as const, stage: 'planning' as const };
+
+    this.logger.debug(
+      { event: 'planning.agent_invoked', artifact_path, working_directory, ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) },
+      'Invoking agent for implementation planning',
+    );
+
+    let drainSummary: AgentDrainSummary | undefined;
+    try {
+      await ensureResultDir(resultFilePath);
+      drainSummary = await drainAgentRunner(
+        this.runner.run({
+          route,
+          profile: this.routingPolicy.resolve(route),
+          working_directory,
+          prompt,
+          telemetry: {
+            phase: 'planning',
+            route_task: route.task,
+            handler: 'AgentRunnerImplementationPlanningAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
+          },
+        }),
+        onProgress,
+        this.logger,
+        'planning',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
+      );
+    } catch (err) {
+      this.logger.error({ event: 'planning.agent_failed', error: String(err) }, 'Agent exited with error during implementation planning');
+      throw new Error(`Implementation planning failed: ${String(err)}`);
+    }
+
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultFilePath,
+      label: 'Implementation planning',
+      logger: this.logger,
+      phase: 'planning',
+      route_task: 'implementation.plan',
+      run_id: telemetry?.run_id,
+      request_id: telemetry?.request_id,
+      drainSummary,
+    });
+    const result = parseImplementationPlanResult(content, resultFilePath);
+    this.logger.debug({ event: 'planning.agent_completed', status: result.status }, 'Agent implementation planning completed');
     return result;
   }
 }
@@ -802,6 +877,27 @@ function parseImplementationResult(content: string, path: string): Implementatio
   };
 }
 
+function parseImplementationPlanResult(content: string, path: string): ImplementationPlanResult {
+  const obj = parseJsonObject(content, `Implementation planning: result file at "${path}"`);
+  const rawStatus = obj['status'];
+  const status = typeof rawStatus === 'string'
+    ? (STATUS_SYNONYMS[rawStatus] ?? rawStatus)
+    : rawStatus;
+  if (status !== 'complete' && status !== 'needs_input' && status !== 'failed') {
+    throw new Error(`Implementation planning: invalid STATUS value "${String(rawStatus)}" in result file`);
+  }
+  const planPath = typeof obj['plan_path'] === 'string' ? obj['plan_path'] : undefined;
+  if (status === 'complete' && !planPath) {
+    throw new Error(`Implementation planning: result file missing "plan_path" string`);
+  }
+  return {
+    status,
+    plan_path: planPath,
+    question: typeof obj['question'] === 'string' ? obj['question'] : undefined,
+    error: typeof obj['error'] === 'string' ? obj['error'] : undefined,
+  };
+}
+
 function parseQuestionAnswer(content: string): string {
   const obj = parseJsonObject(content, 'Question answering: result file');
   if (typeof obj['answer'] !== 'string') {
@@ -1063,7 +1159,7 @@ function buildArtifactRevisePrompt(
   ].join('\n');
 }
 
-function buildImplementationPrompt(artifact_path: string, result_file_path: string, additionalContext?: string): string {
+function buildImplementationPrompt(artifact_path: string, result_file_path: string, additionalContext?: string, planPath?: string): string {
   const lines: string[] = [];
   lines.push(BRANCH_OWNERSHIP_POLICY);
   lines.push('');
@@ -1091,9 +1187,14 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
   }
 
   lines.push(`Read the approved artifact at: ${artifact_path}`);
+  if (planPath) {
+    lines.push(`Read the existing implementation plan at: ${planPath}`);
+    lines.push('');
+    lines.push('Do not create a new implementation plan. Use the existing plan as the execution checklist.');
+  }
   lines.push('');
 
-  if (!additionalContext) {
+  if (!additionalContext && !planPath) {
     lines.push('Step 1 - Create an implementation plan');
     lines.push('Use the `superpowers:writing-plans` skill.');
     lines.push('');
@@ -1147,6 +1248,36 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
   lines.push(CHECKPOINT_INSTRUCTIONS);
 
   return lines.join('\n');
+}
+
+function buildImplementationPlanPrompt(artifact_path: string, working_directory: string, result_file_path: string): string {
+  const planDir = join(working_directory, 'docs', 'superpowers', 'plans');
+  return [
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    `Read the approved artifact at: ${artifact_path}`,
+    ``,
+    `Create an implementation plan using the \`superpowers:writing-plans\` skill.`,
+    `Use the artifact as the authoritative baseline, especially its task list.`,
+    `Save the plan under: ${planDir}`,
+    ``,
+    `Write the result to: ${result_file_path}`,
+    `Create the directory if it does not exist. The JSON must have this structure:`,
+    `{`,
+    `  "status": "complete" | "needs_input" | "failed",`,
+    `  "plan_path": "<absolute path to the plan file when complete>",`,
+    `  "question": "only when needs_input",`,
+    `  "error": "only when failed"`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- Use only the exact canonical status values: "complete", "needs_input", or "failed".`,
+    `- When status is "complete", plan_path must point to the plan file you wrote.`,
+    `- Do not execute the plan in this session; implementation happens in a separate stage.`,
+    `- Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
 }
 
 function buildQuestionPrompt(question: string, resultPath: string): string {

@@ -3,7 +3,7 @@ import type pino from 'pino';
 import type { IssueFiler } from '../types/issue-filing.js';
 import type { IssueManager, PRManager } from '../types/issue-tracker.js';
 import type { PRTitleGenerator } from './ai/pr-title-generator.js';
-import type { ArtifactAuthoringAgent, ImplementationAgent, QuestionAnsweringAgent } from '../types/ai.js';
+import type { ArtifactAuthoringAgent, ImplementationAgent, ImplementationPlanningAgent, QuestionAnsweringAgent } from '../types/ai.js';
 import type { Request, ThreadMessage } from '../types/events.js';
 import type { ConversationRef } from '../types/channel.js';
 import type { FeedbackSource } from '../types/feedback-source.js';
@@ -24,6 +24,7 @@ import { ArtifactFeedbackHandler } from './handlers/artifact-feedback-handler.js
 import { ImplementationStartHandler } from './handlers/implementation-start-handler.js';
 import { ImplementationFeedbackHandler } from './handlers/implementation-feedback-handler.js';
 import { ImplementationApprovalHandler } from './handlers/implementation-approval-handler.js';
+import { PlanningHandler } from './handlers/planning-handler.js';
 import { IssueFilingHandler } from './handlers/issue-filing-handler.js';
 import { PrMergeHandler } from './handlers/pr-merge-handler.js';
 import { QuestionHandler } from './handlers/question-handler.js';
@@ -76,6 +77,7 @@ export interface DefaultHandlerRegistryDeps {
   feedbackSource?: FeedbackSource;
   questionAnswerer?: QuestionAnsweringAgent;
   specCommitter?: Pick<SpecCommitter, 'commit' | 'updateStatus'>;
+  implementationPlanner?: ImplementationPlanningAgent;
   implementer?: ImplementationAgent;
   implFeedbackPage?: ImplementationReviewPublisher;
   prManager?: PRManager;
@@ -141,6 +143,8 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
     const result = await approveArtifact(deps, branchGuard, run, feedback);
     if (result.status === 'failed') return;
     if (!result.implementation_required) return;
+    const planning = await runPlanning(deps, feedback, run);
+    if (planning.status !== 'implementing') return;
     await runImplementation(deps, branchGuard, feedback, run);
   });
   registerThreadMessage('reviewing_implementation', 'approval', 'ImplementationApprovalHandler', (feedback, run) => handleImplementationApproval(deps, branchGuard, feedback, run));
@@ -237,6 +241,26 @@ async function runImplementation(
     reviewCoordinator: deps.reviewCoordinator,
   });
   await handler.handle(run, feedback, additionalContext);
+}
+
+async function runPlanning(
+  deps: DefaultHandlerRegistryDeps,
+  feedback: ThreadMessage,
+  run: Run,
+): Promise<Awaited<ReturnType<PlanningHandler['handle']>>> {
+  if (!deps.implementationPlanner) {
+    await deps.failRun(run, feedback.conversation, new Error('Implementation planner is required for planning'));
+    return { status: 'failed' };
+  }
+  const handler = new PlanningHandler({
+    planner: deps.implementationPlanner,
+    postMessage: deps.postMessage,
+    transition: deps.transition,
+    failRun: deps.failRun,
+    persist: deps.persist,
+    logger: deps.logger,
+  });
+  return handler.handle(run, feedback);
 }
 
 async function handleImplementationFeedback(

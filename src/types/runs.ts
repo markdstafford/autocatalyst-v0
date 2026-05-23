@@ -7,6 +7,7 @@ export type RunStage =
   | 'intake'
   | 'speccing'
   | 'reviewing_spec'
+  | 'planning'
   | 'implementing'
   | 'awaiting_impl_input'
   | 'reviewing_implementation'
@@ -18,6 +19,7 @@ export const VALID_RUN_STAGES: RunStage[] = [
   'intake',
   'speccing',
   'reviewing_spec',
+  'planning',
   'implementing',
   'awaiting_impl_input',
   'reviewing_implementation',
@@ -41,6 +43,7 @@ export interface Run {
   workspace_path: string;
   branch: string;
   artifact?: Artifact;
+  implementation_plan_path?: string;
   impl_feedback_ref: string | undefined;
   issue: number | undefined;
   attempt: number;

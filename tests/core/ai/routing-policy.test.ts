@@ -105,7 +105,7 @@ describe('DefaultAgentRoutingPolicy', () => {
       required_skills: ['mm:issue-triage'],
     });
     expect(policy.resolve({ task: 'implementation.run' })).toMatchObject({
-      required_skills: ['superpowers:writing-plans', 'superpowers:subagent-driven-development'],
+      required_skills: ['superpowers:subagent-driven-development'],
     });
     expect(policy.resolve({ task: 'question.answer' })).toMatchObject({
       required_skills: [],

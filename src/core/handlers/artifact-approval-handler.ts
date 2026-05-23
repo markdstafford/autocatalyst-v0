@@ -58,8 +58,7 @@ export class ArtifactApprovalHandler {
     if (policy.implementation_required) {
       run.attempt += 1;
       this.deps.persist();
-      this.deps.transition(run, 'implementing');
-      this.deps.logger.info({ event: 'implementation.started', run_id: run.id, request_id: run.request_id }, 'Implementation started');
+      this.deps.transition(run, 'planning');
     } else {
       this.deps.transition(run, 'done');
     }

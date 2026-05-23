@@ -89,6 +89,7 @@ ai:
     pr.title_generate: classify-haiku
     artifact.create: artifact-agent
     artifact.revise: artifact-agent
+    implementation.plan: impl-agent
     implementation.run: impl-agent
     implementation.review.initial: review-agent
     implementation.review.final: review-agent

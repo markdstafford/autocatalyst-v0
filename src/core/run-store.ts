@@ -12,7 +12,7 @@ export interface RunStore {
   save(runs: Map<string, Run>): void;
 }
 
-const STALE_STAGES = new Set(['intake', 'speccing', 'implementing']);
+const STALE_STAGES = new Set(['intake', 'speccing', 'planning', 'implementing']);
 const TERMINAL_STAGES = new Set(['done', 'failed']);
 
 interface FileRunStoreOptions {

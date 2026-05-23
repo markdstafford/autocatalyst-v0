@@ -49,9 +49,9 @@ describe('skillRefsForRoute', () => {
       .toEqual(['mm:issue-triage']);
   });
 
-  test('implementation.run → writing-plans + subagent-driven-development', () => {
-    expect(skillRefsForRoute({ task: 'implementation.run' }))
-      .toEqual(['superpowers:writing-plans', 'superpowers:subagent-driven-development']);
+  test('implementation.plan → writing-plans and implementation.run → subagent-driven-development', () => {
+    expect(skillRefsForRoute({ task: 'implementation.plan' })).toEqual(['superpowers:writing-plans']);
+    expect(skillRefsForRoute({ task: 'implementation.run' })).toEqual(['superpowers:subagent-driven-development']);
   });
 
   test('question.answer → no skills', () => {
@@ -175,7 +175,7 @@ describe('OpenAIAgentSdkAgentRunner', () => {
     }));
 
     expect(materializeSkills).toHaveBeenCalledWith(
-      ['superpowers:writing-plans', 'superpowers:subagent-driven-development'],
+      ['superpowers:subagent-driven-development'],
     );
   });
 

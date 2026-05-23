@@ -61,6 +61,7 @@ export const BUILT_IN_CLASSIFICATION_CONTEXTS: ClassificationContext[] = [
   'reviewing_spec',
   'reviewing_implementation',
   'awaiting_impl_input',
+  'planning',
   'speccing',
   'implementing',
   'pr_open',
@@ -115,8 +116,8 @@ export function registerBuiltInIntents(registry: IntentRegistry): void {
   registry.register({
     name: 'feedback',
     description: 'the human is providing feedback or revision requests',
-    valid_contexts: ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'speccing', 'implementing'],
-    fallback_contexts: ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'speccing', 'implementing'],
+    valid_contexts: ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'speccing', 'planning', 'implementing'],
+    fallback_contexts: ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'speccing', 'planning', 'implementing'],
   });
   registry.register({
     name: 'approval',
@@ -131,7 +132,7 @@ export function registerBuiltInIntents(registry: IntentRegistry): void {
   registry.register({
     name: 'ignore',
     description: 'the message is not actionable',
-    valid_contexts: ['new_thread', 'intake', 'existing_issue', 'reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'speccing', 'implementing', 'pr_open', 'done', 'failed'],
+    valid_contexts: ['new_thread', 'intake', 'existing_issue', 'reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'speccing', 'planning', 'implementing', 'pr_open', 'done', 'failed'],
     fallback_contexts: ['pr_open', 'done', 'failed'],
   });
 }

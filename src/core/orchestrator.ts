@@ -8,7 +8,7 @@ import { createLogger } from './logger.js';
 import type { ChannelAdapter } from '../adapters/channel-adapter.js';
 import { channelKey, type ConversationRef, type MessageRef } from '../types/channel.js';
 import type { WorkspaceManager } from './workspace-manager.js';
-import type { ArtifactAuthoringAgent, ImplementationAgent, QuestionAnsweringAgent } from '../types/ai.js';
+import type { ArtifactAuthoringAgent, ImplementationAgent, ImplementationPlanningAgent, QuestionAnsweringAgent } from '../types/ai.js';
 import type { ArtifactContentSource, ArtifactPublisher } from '../types/publisher.js';
 import type { Run, RunStage, RequestIntent } from '../types/runs.js';
 import { VALID_RUN_STAGES } from '../types/runs.js';
@@ -32,7 +32,7 @@ import { extractIssueReference, buildEnrichedClassificationMessage } from './iss
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
-  if (stage === 'reviewing_spec') return 'implementing';
+  if (stage === 'reviewing_spec') return 'planning';
   if (stage === 'reviewing_implementation') return 'implementing';
   if (stage === 'awaiting_impl_input') return 'implementing';
   return stage;
@@ -64,6 +64,7 @@ export interface OrchestratorDeps {
   intentClassifier?: IntentClassifier;
   questionAnswerer?: QuestionAnsweringAgent;
   specCommitter?: SpecCommitter;
+  implementationPlanner?: ImplementationPlanningAgent;
   implementer?: ImplementationAgent;
   implFeedbackPage?: ImplementationReviewPublisher;
   prManager?: PRManager;
@@ -544,6 +545,7 @@ export class OrchestratorImpl implements Orchestrator {
       feedbackSource: this.deps.feedbackSource,
       questionAnswerer: this.deps.questionAnswerer,
       specCommitter: this.deps.specCommitter,
+      implementationPlanner: this.deps.implementationPlanner,
       implementer: this.deps.implementer,
       implFeedbackPage: this.deps.implFeedbackPage,
       prManager: this.deps.prManager,

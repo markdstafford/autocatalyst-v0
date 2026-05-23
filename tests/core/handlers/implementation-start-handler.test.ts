@@ -51,6 +51,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
       published_ref: { provider: 'artifact_publisher', id: 'CANVAS001' },
       status: 'approved',
     },
+    implementation_plan_path: '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     impl_feedback_ref: undefined,
     issue: undefined,
     attempt: 1,
@@ -122,6 +123,7 @@ describe('ImplementationStartHandler', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith({
       artifact_ref: 'CANVAS-TYPED',
@@ -154,6 +156,7 @@ describe('ImplementationStartHandler', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith({
       artifact_ref: 'CANVAS001',
