@@ -304,7 +304,12 @@ export function buildAgentRunner(
       credential.resolvedValue!,
       endpoint.base_url,
       openAiAgentProfile.model,
-      { meter, sandboxEnvTokens },
+      {
+        meter,
+        sandboxEnvTokens,
+        loggerProvider,
+        ...(requestLogDir ? { requestLog: { logDir: requestLogDir } } : {}),
+      },
     );
   }
 
