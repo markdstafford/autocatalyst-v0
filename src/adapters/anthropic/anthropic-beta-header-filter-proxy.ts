@@ -1,5 +1,8 @@
 import { once } from 'node:events';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
@@ -28,6 +31,12 @@ const HOP_BY_HOP_RESPONSE_HEADERS = new Set([
   'upgrade',
 ]);
 
+const CREDENTIAL_HEADERS = new Set(['x-api-key', 'api-key', 'authorization']);
+
+export interface RequestLogOptions {
+  logDir: string;
+}
+
 export interface AnthropicBetaHeaderFilterProxy {
   baseUrl: string;
   server: Server;
@@ -37,6 +46,7 @@ export interface AnthropicBetaHeaderFilterProxy {
 export interface AnthropicBetaHeaderFilterProxyOptions {
   stripBetaValues: string[];
   logDestination?: pino.DestinationStream;
+  requestLog?: RequestLogOptions;
 }
 
 /**
@@ -53,11 +63,12 @@ export async function startAnthropicBetaHeaderFilterProxy(
   const targetBase = new URL(targetBaseUrl);
   const stripBetaValues = normalizedStripBetaValues(options.stripBetaValues);
   const logger = createLogger('anthropic-beta-header-filter-proxy', { destination: options.logDestination });
+  const { requestLog } = options;
   let totalRequests = 0;
 
   const server = createServer((req, res) => {
     totalRequests++;
-    handleProxyRequest(req, res, targetBase, stripBetaValues, logger).catch(err => {
+    handleProxyRequest(req, res, targetBase, stripBetaValues, logger, requestLog).catch(err => {
       logger.error({ event: 'proxy.request_error', method: req.method, error: String(err) }, 'Proxy request error');
       if (res.headersSent) {
         res.destroy(err);
@@ -109,12 +120,20 @@ async function handleProxyRequest(
   targetBase: URL,
   stripBetaValues: ReadonlySet<string>,
   logger: pino.Logger,
+  requestLog?: RequestLogOptions,
 ): Promise<void> {
   const targetUrl = targetUrlForRequest(targetBase, req.url);
+  const headers = requestHeaders(req.headers, stripBetaValues);
+  const body = await requestBody(req);
+
+  if (requestLog) {
+    await dumpRequest(targetUrl, req.method ?? 'GET', headers, body, requestLog, logger);
+  }
+
   const response = await fetch(targetUrl, {
     method: req.method,
-    headers: requestHeaders(req.headers, stripBetaValues),
-    body: await requestBody(req),
+    headers,
+    body,
   });
 
   logger.debug(
@@ -134,6 +153,83 @@ async function handleProxyRequest(
       .on('error', reject)
       .on('finish', resolve);
   });
+}
+
+async function dumpRequest(
+  targetUrl: URL,
+  method: string,
+  headers: Headers,
+  body: ArrayBuffer | undefined,
+  requestLog: RequestLogOptions,
+  logger: pino.Logger,
+): Promise<void> {
+  const start = Date.now();
+  try {
+    await mkdir(requestLog.logDir, { recursive: true, mode: 0o700 });
+
+    const rawHeaders: Record<string, string> = {};
+    headers.forEach((value, name) => { rawHeaders[name] = value; });
+    const redactedHeaders = redactHeaders(rawHeaders);
+
+    let parsedBody: unknown;
+    let bodyRaw: string | undefined;
+    if (body !== undefined) {
+      const text = Buffer.from(body).toString('utf8');
+      try {
+        parsedBody = JSON.parse(text);
+      } catch {
+        bodyRaw = text;
+      }
+    }
+
+    const record: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      method,
+      url: targetUrl.toString(),
+      headers: redactedHeaders,
+    };
+    if (parsedBody !== undefined) record['body'] = parsedBody;
+    if (bodyRaw !== undefined) record['body_raw'] = bodyRaw;
+
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const suffix = randomBytes(4).toString('hex');
+    const filename = `${ts}-${suffix}.json`;
+    const filePath = join(requestLog.logDir, filename);
+    await writeFile(filePath, JSON.stringify(record, null, 2), { mode: 0o600 });
+
+    logger.debug(
+      {
+        event: 'proxy.request_dumped',
+        path: filePath,
+        method,
+        target_host: targetUrl.hostname,
+        body_bytes: body?.byteLength ?? 0,
+        header_count: Object.keys(rawHeaders).length,
+        duration_ms: Date.now() - start,
+      },
+      'Proxy request dumped',
+    );
+  } catch (err) {
+    logger.warn(
+      { event: 'proxy.request_dump_failed', error: String(err), duration_ms: Date.now() - start },
+      'Proxy request dump failed',
+    );
+  }
+}
+
+function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    result[name] = CREDENTIAL_HEADERS.has(name.toLowerCase())
+      ? redactCredentialValue(value)
+      : value;
+  }
+  return result;
+}
+
+function redactCredentialValue(value: string): string {
+  if (value.length <= 8) return value;
+  return `${value.slice(0, 4)}redacted${value.slice(-4)}`;
 }
 
 function targetUrlForRequest(targetBase: URL, requestUrl: string | undefined): URL {
