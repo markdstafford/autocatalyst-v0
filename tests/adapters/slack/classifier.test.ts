@@ -237,6 +237,39 @@ describe('classifyMessage — command detection', () => {
   });
 });
 
+describe('classifyMessage — MESSAGE_ONLY_COMMANDS thread guard (ac-set-status)', () => {
+  it(':ac-set-status: in registered run thread → command run.set-status with stage arg', () => {
+    const result = classifyMessage(
+      { text: ':ac-set-status: reviewing_implementation', user: 'U999', ts: '200.0', thread_ts: '100.0' },
+      BOT_ID,
+      makeRegistry({ '100.0': 'req-001' }),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('run.set-status');
+      expect(result.args).toEqual(['reviewing_implementation']);
+    }
+  });
+
+  it(':ac-set-status: in root message → ignore', () => {
+    const result = classifyMessage(
+      { text: ':ac-set-status: reviewing_implementation', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('ignore');
+  });
+
+  it(':ac-set-status: in unregistered thread → ignore', () => {
+    const result = classifyMessage(
+      { text: ':ac-set-status: reviewing_implementation', user: 'U999', ts: '200.0', thread_ts: '100.0' },
+      BOT_ID,
+      makeRegistry(), // '100.0' not registered
+    );
+    expect(result.intent).toBe('ignore');
+  });
+});
+
 describe('classifyMessage — classify-intent command', () => {
   it(':ac-classify-intent: hello world → command classify-intent with args [hello, world]', () => {
     const result = classifyMessage(

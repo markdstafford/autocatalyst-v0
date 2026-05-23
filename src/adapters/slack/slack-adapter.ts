@@ -6,8 +6,7 @@ import { createLogger } from '../../core/logger.js';
 import type { ChannelAdapter } from '../channel-adapter.js';
 import type { ChannelRegistry, ConversationRef, MessageRef } from '../../types/channel.js';
 import type { InboundEvent, Request, ThreadMessage } from '../../types/events.js';
-import { classifyMessage } from './classifier.js';
-import { EMOJI_COMMAND_TABLE } from './classifier.js';
+import { classifyMessage, EMOJI_COMMAND_TABLE, MESSAGE_ONLY_COMMANDS } from './classifier.js';
 import type { CommandEvent } from '../../types/commands.js';
 import { ThreadRegistry } from './thread-registry.js';
 import type { RepoEntry, ChannelRepoMap, PreRepoEntry } from '../../types/config.js';
@@ -293,6 +292,13 @@ export class SlackAdapter implements ChannelAdapter {
       const commandName = EMOJI_COMMAND_TABLE[reaction.reaction];
       if (!commandName) {
         this.logger.debug({ event: 'slack.reaction.ignored', emoji: reaction.reaction }, 'Reaction ignored');
+        return;
+      }
+      if (MESSAGE_ONLY_COMMANDS.has(commandName)) {
+        this.logger.debug(
+          { event: 'slack.reaction.ignored', emoji: reaction.reaction, reason: 'message_only_command' },
+          'Reaction ignored — command requires explicit thread message',
+        );
         return;
       }
 

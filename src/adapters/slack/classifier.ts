@@ -24,6 +24,13 @@ export const EMOJI_COMMAND_TABLE: Record<string, string> = {
   'ac-set-status': 'run.set-status',
 };
 
+/**
+ * Commands that may only be dispatched via a Slack message, never via an emoji reaction.
+ * The reaction_added handler checks this set and discards the event before fetching
+ * message history or emitting a CommandEvent.
+ */
+export const MESSAGE_ONLY_COMMANDS = new Set<string>(['run.set-status']);
+
 export function classifyMessage(
   message: MessageInput,
   botUserId: string,
@@ -38,6 +45,13 @@ export function classifyMessage(
     const emojiKey = `ac-${commandMatch[1]}`;
     const commandName = EMOJI_COMMAND_TABLE[emojiKey];
     if (commandName) {
+      // MESSAGE_ONLY_COMMANDS require a registered run thread — reject root and unregistered messages
+      if (MESSAGE_ONLY_COMMANDS.has(commandName)) {
+        const isReply = message.thread_ts !== undefined && message.thread_ts !== message.ts;
+        if (!isReply || registry.resolve(message.thread_ts!) === undefined) {
+          return { intent: 'ignore' };
+        }
+      }
       const stripped = (message.text ?? '').replace(/:ac-[a-z0-9_-]+:/, '').trim();
       const args = stripped ? stripped.split(/\s+/) : [];
       return { intent: 'command', command: commandName, args };
