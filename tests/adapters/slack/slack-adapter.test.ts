@@ -1103,7 +1103,7 @@ describe('SlackAdapter — reactToMessage', () => {
 });
 
 describe('SlackAdapter — reaction command messageText', () => {
-  it('populates messageText on CommandEvent from the text of the reacted-to message', async () => {
+  it('ac-set-status reaction → no event emitted, no conversations.history call', async () => {
     const mock = makeMockApp({
       botUserId: 'UBOT',
       channels: [{ name: 'ch', id: 'C1' }],
@@ -1116,20 +1116,23 @@ describe('SlackAdapter — reaction command messageText', () => {
     );
     await adapter.start();
 
-    const eventPromise = takeOne(adapter.receive());
+    let emitted = false;
+    const racePromise = Promise.race([
+      takeOne(adapter.receive()).then(() => { emitted = true; }),
+      new Promise<void>(res => setTimeout(res, 30)),
+    ]);
+
     await mock._triggerReaction({
       reaction: 'ac-set-status',
       user: 'U1',
       item: { type: 'message', channel: 'C1', ts: '111.0' },
     });
-    const event = await eventPromise;
 
-    expect(event.type).toBe('command');
-    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
-    expect(cmd.command).toBe('run.set-status');
-    expect(cmd.messageText).toBe('reviewing_implementation');
-
+    await racePromise;
     await adapter.stop();
+
+    expect(emitted).toBe(false);
+    expect(mock.client.conversations.history).not.toHaveBeenCalled();
   });
 
   it('sets messageText to undefined when reacted-to message has no text', async () => {
