@@ -244,6 +244,131 @@ async function dumpRequest(
   }
 }
 
+interface ResponseObservation {
+  dumpId: string;
+  method: string;
+  fetchStart: number;
+  headersTime: number;
+  firstByteTime: number | null;
+  bodyBytes: number;
+  streamState: 'completed' | 'interrupted' | 'no_body';
+  captureChunks: Buffer[];
+  captureTruncated: boolean;
+  streamError?: string;
+}
+
+async function dumpResponse(
+  targetUrl: URL,
+  response: Response,
+  obs: ResponseObservation,
+  requestLog: RequestLogOptions,
+  logger: pino.Logger,
+): Promise<void> {
+  const start = Date.now();
+  try {
+    const totalDuration = Date.now() - obs.fetchStart;
+    const filteredHeaders = responseHeaders(response.headers);
+    const redactedHeaders = redactResponseHeadersForDump(filteredHeaders);
+
+    const { tokens: outputTokens, source: tokenCountSource } = obs.streamState === 'completed'
+      ? extractOutputTokens(obs.captureChunks, obs.captureTruncated)
+      : { tokens: null, source: `unavailable_${obs.streamState}` };
+
+    const record: Record<string, unknown> = {
+      timestamp: new Date(obs.fetchStart).toISOString(),
+      request_dump_id: obs.dumpId,
+      request_file: `${obs.dumpId}.request.json`,
+      method: obs.method,
+      url: targetUrl.toString(),
+      status: response.status,
+      status_text: response.statusText,
+      headers: redactedHeaders,
+      timing_ms: {
+        headers: obs.headersTime,
+        first_body_byte: obs.firstByteTime,
+        total: totalDuration,
+      },
+      body_bytes: obs.bodyBytes,
+      body_capture_truncated: obs.captureTruncated,
+      body_parseable_json: tokenCountSource === 'json' || tokenCountSource === 'json_no_usage',
+      output_tokens: outputTokens,
+      token_count_source: tokenCountSource,
+      stream_state: obs.streamState,
+    };
+
+    if (obs.streamError) record['stream_error'] = obs.streamError;
+
+    const filename = `${obs.dumpId}.response.json`;
+    const filePath = join(requestLog.logDir, filename);
+    await writeFile(filePath, JSON.stringify(record, null, 2), { mode: 0o600 });
+
+    logger.debug(
+      {
+        event: 'proxy.response_dumped',
+        path: filePath,
+        method: obs.method,
+        target_host: targetUrl.hostname,
+        status: response.status,
+        duration_ms: totalDuration,
+        body_bytes: obs.bodyBytes,
+        stream_state: obs.streamState,
+        dump_write_ms: Date.now() - start,
+      },
+      'Proxy response dumped',
+    );
+  } catch (err) {
+    logger.warn(
+      { event: 'proxy.response_dump_failed', error: String(err), duration_ms: Date.now() - start },
+      'Proxy response dump failed',
+    );
+  }
+}
+
+async function dumpResponseError(
+  targetUrl: URL,
+  method: string,
+  dumpId: string,
+  fetchStart: number,
+  error: unknown,
+  requestLog: RequestLogOptions,
+  logger: pino.Logger,
+): Promise<void> {
+  const start = Date.now();
+  try {
+    const record: Record<string, unknown> = {
+      timestamp: new Date(fetchStart).toISOString(),
+      request_dump_id: dumpId,
+      request_file: `${dumpId}.request.json`,
+      method,
+      url: targetUrl.toString(),
+      elapsed_ms: Date.now() - fetchStart,
+      error: String(error),
+      stream_state: 'fetch_error',
+    };
+
+    const filename = `${dumpId}.response-error.json`;
+    const filePath = join(requestLog.logDir, filename);
+    await writeFile(filePath, JSON.stringify(record, null, 2), { mode: 0o600 });
+
+    logger.debug(
+      {
+        event: 'proxy.response_fetch_failed',
+        path: filePath,
+        method,
+        target_host: targetUrl.hostname,
+        elapsed_ms: Date.now() - fetchStart,
+        error: String(error),
+      },
+      'Proxy fetch failed before response headers',
+    );
+  } catch (err) {
+    logger.warn(
+      { event: 'proxy.response_dump_failed', error: String(err), duration_ms: Date.now() - start },
+      'Proxy response-error dump failed',
+    );
+  }
+}
+
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
