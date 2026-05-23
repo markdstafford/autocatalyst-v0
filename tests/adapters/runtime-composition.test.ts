@@ -332,3 +332,57 @@ describe('RoutingAwareAgentRunner dispatch', () => {
     expect(openAiRunner.run).not.toHaveBeenCalled();
   });
 });
+
+describe('buildAgentRunner — requestLogDir threading', () => {
+  it('returns ClaudeAgentSdkAgentRunner when requestLogDir is provided', () => {
+    const runner = buildAgentRunner(
+      makeAgentResolvedAi('claude_agent_sdk'),
+      noopLogger,
+      undefined,
+      [],
+      undefined,
+      '/tmp/test-workspace/request-logs',
+    );
+    expect(runner).toBeInstanceOf(ClaudeAgentSdkAgentRunner);
+  });
+
+  it('returns ClaudeAgentSdkAgentRunner when requestLogDir is undefined (backward compat)', () => {
+    const runner = buildAgentRunner(
+      makeAgentResolvedAi('claude_agent_sdk'),
+      noopLogger,
+      undefined,
+      [],
+      undefined,
+      undefined,
+    );
+    expect(runner).toBeInstanceOf(ClaudeAgentSdkAgentRunner);
+  });
+
+  it('wires requestLog into OpenAIAgentSdkAgentRunner when requestLogDir is provided', () => {
+    const runner = buildAgentRunner(
+      makeAgentResolvedAi('openai_agent_sdk'),
+      noopLogger,
+      undefined,
+      [],
+      undefined,
+      '/tmp/test-workspace/request-logs',
+    );
+    expect(runner).toBeInstanceOf(OpenAIAgentSdkAgentRunner);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((runner as any).requestLog).toEqual({ logDir: '/tmp/test-workspace/request-logs' });
+  });
+
+  it('does not set requestLog on OpenAIAgentSdkAgentRunner when requestLogDir is undefined', () => {
+    const runner = buildAgentRunner(
+      makeAgentResolvedAi('openai_agent_sdk'),
+      noopLogger,
+      undefined,
+      [],
+      undefined,
+      undefined,
+    );
+    expect(runner).toBeInstanceOf(OpenAIAgentSdkAgentRunner);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((runner as any).requestLog).toBeUndefined();
+  });
+});

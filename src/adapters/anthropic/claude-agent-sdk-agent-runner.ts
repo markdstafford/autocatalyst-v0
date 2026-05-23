@@ -29,7 +29,7 @@ import type {
 import { createLogger } from '../../core/logger.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 import { buildSandboxEnvironmentWithSummary, buildSandboxEnvironment } from '../sandbox-environment.js';
-import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy } from './anthropic-beta-header-filter-proxy.js';
+import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy, type RequestLogOptions } from './anthropic-beta-header-filter-proxy.js';
 
 type QueryFn = typeof _query;
 
@@ -148,6 +148,8 @@ export interface ClaudeAgentSdkAgentRunnerOptions {
   sandboxEnvTokens?: string[];
   logDestination?: pino.DestinationStream;
   loggerProvider?: LoggerProvider;
+  requestLog?: RequestLogOptions;
+  startProxy?: typeof startAnthropicBetaHeaderFilterProxy;
 }
 
 export class ClaudeAgentSdkAgentRunner implements AgentRunner {
@@ -159,12 +161,16 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly _agentTokenUsage: Histogram;
   private readonly sandboxEnvTokens: string[];
   private readonly logger: pino.Logger;
+  private readonly requestLog: RequestLogOptions | undefined;
+  private readonly startProxy: typeof startAnthropicBetaHeaderFilterProxy;
   private _betaFilterProxy: Promise<AnthropicBetaHeaderFilterProxy> | null = null;
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
     this.materializeRuntimeSkills = options?.materializeRuntimeSkills ?? materializeClaudeRuntimeSkillPlugins;
     this.sandboxEnvTokens = options?.sandboxEnvTokens ?? [];
+    this.requestLog = options?.requestLog;
+    this.startProxy = options?.startProxy ?? startAnthropicBetaHeaderFilterProxy;
     this.logger = createLogger('claude-agent-sdk', {
       destination: options?.logDestination,
       loggerProvider: options?.loggerProvider,
@@ -390,10 +396,11 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     const stripBetaValues = profile.anthropic_beta_header_filter?.strip
       .map(value => value.trim())
       .filter(value => value.length > 0) ?? [];
-    if (stripBetaValues.length === 0) return null;
-
     if (!this._betaFilterProxy) {
-      const pending = startAnthropicBetaHeaderFilterProxy(profile.base_url, { stripBetaValues });
+      const pending = this.startProxy(profile.base_url, {
+        stripBetaValues,
+        ...(this.requestLog ? { requestLog: this.requestLog } : {}),
+      });
       this._betaFilterProxy = pending;
       pending.catch(() => {
         if (this._betaFilterProxy === pending) {

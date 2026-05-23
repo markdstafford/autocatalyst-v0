@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type pino from 'pino';
 import type { Meter } from '@opentelemetry/api';
 import type { LoggerProvider } from '@opentelemetry/api-logs';
@@ -59,6 +60,7 @@ export interface ComposeWorkflowRuntimeOptions {
   logger: RuntimeLogger;
   meter?: Meter;
   loggerProvider?: LoggerProvider;
+  logRequests?: boolean;
 }
 
 export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRuntimeOptions): Promise<ReturnType<typeof bootstrapWorkflowRuntime>> {
@@ -96,6 +98,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   const repo_name = repoNameFromUrl(repo_url);
   const slackChannelConfig = findConfiguredProvider(normalizedConfig.channels, builtInExtensions, 'channel', 'slack');
   const workspaceRoot = workspaceRootFromConfig(slackChannelConfig?.workspace_root ?? normalizedConfig.workspace_root);
+  const requestLogDir = options.logRequests ? join(workspaceRoot, 'request-logs') : undefined;
 
   const botToken = stringConfig(slackChannelConfig?.config, 'bot_token');
   const appToken = stringConfig(slackChannelConfig?.config, 'app_token');
@@ -119,7 +122,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
   const aiRoutingPolicy = buildAgentRoutingPolicy(resolvedAi);
   const directModelRunner = buildDirectModelRunner(resolvedAi, logger, options.loggerProvider);
-  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter, currentConfig.config.sandbox?.env_tokens, options.loggerProvider);
+  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter, currentConfig.config.sandbox?.env_tokens, options.loggerProvider, requestLogDir);
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath, { loggerProvider: options.loggerProvider });
@@ -243,6 +246,7 @@ export function buildAgentRunner(
   meter?: Meter,
   sandboxEnvTokens?: string[],
   loggerProvider?: LoggerProvider,
+  requestLogDir?: string,
 ): AgentRunner {
   const claudeProfile = resolvedAi.profiles.find(p => p.runner === 'claude_agent_sdk');
   const openAiAgentProfile = resolvedAi.profiles.find(p => p.runner === 'openai_agent_sdk');
@@ -265,7 +269,12 @@ export function buildAgentRunner(
           },
           'Using Claude Agent SDK',
         );
-        return new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens, loggerProvider });
+        return new ClaudeAgentSdkAgentRunner({
+          meter,
+          sandboxEnvTokens,
+          loggerProvider,
+          ...(requestLogDir ? { requestLog: { logDir: requestLogDir } } : {}),
+        });
       })()
     : null;
 
@@ -295,7 +304,12 @@ export function buildAgentRunner(
       credential.resolvedValue!,
       endpoint.base_url,
       openAiAgentProfile.model,
-      { meter, sandboxEnvTokens },
+      {
+        meter,
+        sandboxEnvTokens,
+        loggerProvider,
+        ...(requestLogDir ? { requestLog: { logDir: requestLogDir } } : {}),
+      },
     );
   }
 

@@ -6,6 +6,7 @@ export interface ParsedArgs {
   repoPath: string;      // first path (backward compat)
   repoPaths: string[];   // all paths; length >= 1 when --repo is provided
   help: boolean;
+  logRequests: boolean;
 }
 
 export function parseArgs(args: string[]): ParsedArgs {
@@ -14,7 +15,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     const remaining = args.slice(1);
 
     if (remaining.includes('--help') || remaining.includes('-h')) {
-      return { command: 'init', repoPath: '', repoPaths: [], help: true };
+      return { command: 'init', repoPath: '', repoPaths: [], help: true, logRequests: false };
     }
 
     const repoIndex = remaining.indexOf('--repo');
@@ -23,13 +24,15 @@ export function parseArgs(args: string[]): ParsedArgs {
         ? remaining[repoIndex + 1]
         : '';
 
-    return { command: 'init', repoPath, repoPaths: repoPath ? [repoPath] : [], help: false };
+    return { command: 'init', repoPath, repoPaths: repoPath ? [repoPath] : [], help: false, logRequests: false };
   }
 
   // --help / -h (run command)
   if (args.includes('--help') || args.includes('-h')) {
-    return { command: 'run', repoPath: '', repoPaths: [], help: true };
+    return { command: 'run', repoPath: '', repoPaths: [], help: true, logRequests: false };
   }
+
+  const logRequests = args.includes('--log-requests');
 
   // run command — --repo is required and validated
   const repoIndex = args.indexOf('--repo');
@@ -60,7 +63,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     return resolved;
   });
 
-  return { command: 'run', repoPath: repoPaths[0], repoPaths, help: false };
+  return { command: 'run', repoPath: repoPaths[0], repoPaths, help: false, logRequests };
 }
 
 export function printUsage(): void {
@@ -72,6 +75,7 @@ export function printUsage(): void {
 
 Options:
   --repo <path> [<path2>...]   Path(s) to target repository/repositories
+  --log-requests               Dump outbound proxy requests to <workspace root>/request-logs/
   --help                       Show this help message
 `);
 }

@@ -87,6 +87,7 @@ try {
     logger,
     meter: telemetry.meter,
     loggerProvider: telemetry.loggerProvider,
+    logRequests: args.logRequests,
   });
 
   const cleanupSignals = registerSignalHandlers(service);
