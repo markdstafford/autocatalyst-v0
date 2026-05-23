@@ -126,7 +126,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
 
     const result = await page.create(makeReviewInput());
 
-    expect(result).toEqual({ id: 'new-page-id', url: 'https://notion.so/newpageid' });
+    expect(result).toEqual({ id: 'new-page-id', url: 'https://notion.so/newpageid', label: 'View testing guide' });
   });
 
   it('sets Title to "Testing guide: {spec_title}"', async () => {
@@ -313,6 +313,13 @@ describe('NotionImplementationFeedbackPage — create', () => {
     expect(placeholder?.type).toBe('to_do');
     expect(placeholder?.to_do!.rich_text[0].text.content).toBe('Add any extra testing steps here.');
     expect(placeholder?.to_do!.checked).toBe(false);
+  });
+
+  it('returns label "View testing guide" as part of the published review result', async () => {
+    const client = makeNotionClient();
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+    const result = await page.create(makeReviewInput());
+    expect(result.label).toBe('View testing guide');
   });
 
   it('falls back to legacy summary as single Changes bullet and fixed Confirm bullet', async () => {
