@@ -24,6 +24,13 @@ export const EMOJI_COMMAND_TABLE: Record<string, string> = {
   'ac-set-status': 'run.set-status',
 };
 
+/**
+ * Commands that may only be dispatched via a Slack message, never via an emoji reaction.
+ * The reaction_added handler checks this set and discards the event before fetching
+ * message history or emitting a CommandEvent.
+ */
+export const MESSAGE_ONLY_COMMANDS = new Set<string>(['run.set-status']);
+
 export function classifyMessage(
   message: MessageInput,
   botUserId: string,
