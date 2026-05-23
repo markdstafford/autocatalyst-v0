@@ -298,7 +298,7 @@ describe('Anthropic beta header filter proxy', () => {
       expect(stat.mode & 0o777).toBe(0o700);
     });
 
-    test('throws at startup when logDir cannot be created', async () => {
+    test('starts and forwards requests when logDir cannot be created', async () => {
       const upstream = createServer((req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ forwarded: true }));
@@ -310,12 +310,21 @@ describe('Anthropic beta header filter proxy', () => {
       rmSync(logDir, { recursive: true });
       writeFileSync(logDir, 'not-a-dir');
 
-      await expect(
-        startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
-          stripBetaValues: [],
-          requestLog: { logDir },
-        }),
-      ).rejects.toThrow();
+      // Startup must succeed — dir setup failure only disables dumping, does not abort the proxy
+      const proxy = await startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
+        stripBetaValues: [],
+        requestLog: { logDir },
+      });
+      servers.push(proxy.server);
+
+      const response = await fetch(`${proxy.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ forwarded: true });
+      await proxy.close();
     });
   });
 });

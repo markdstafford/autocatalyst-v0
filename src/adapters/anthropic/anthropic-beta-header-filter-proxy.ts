@@ -103,8 +103,10 @@ export async function startAnthropicBetaHeaderFilterProxy(
       await mkdir(requestLog.logDir, { recursive: true, mode: 0o700 });
       await chmod(requestLog.logDir, 0o700);
     } catch (err) {
-      server.close();
-      throw err;
+      logger.warn(
+        { event: 'proxy.request_dump_failed', error: String(err) },
+        'Failed to prepare request-log directory; request dumping disabled',
+      );
     }
   }
 
