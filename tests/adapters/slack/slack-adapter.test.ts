@@ -698,8 +698,7 @@ describe('SlackAdapter — command events (reaction-based)', () => {
     }
   });
 
-  it('reaction on thread reply when history returns a different message → falls back to conversations.replies to find root ts and message text', async () => {
-    // history returns the root message (ts='100.0'), not the reply (ts='200.0')
+  it('ac-set-status reaction on thread reply → no event emitted, no conversations.history call', async () => {
     const mock = makeMockApp({
       botUserId: BOT_ID,
       historyMessages: [{ ts: '100.0', thread_ts: '100.0', text: 'original request' }],
@@ -707,7 +706,7 @@ describe('SlackAdapter — command events (reaction-based)', () => {
     });
     const { ThreadRegistry } = await import('../../../src/adapters/slack/thread-registry.js');
     const registry = new ThreadRegistry();
-    registry.register('100.0', 'req-001'); // root ts registered as known run
+    registry.register('100.0', 'req-001');
 
     const adapter = new SlackAdapter(
       mock as unknown as App,
@@ -716,8 +715,12 @@ describe('SlackAdapter — command events (reaction-based)', () => {
     );
     await adapter.start();
 
-    const eventPromise = takeOne(adapter.receive());
-    // User reacts to the reply at ts='200.0' (not the root at '100.0')
+    let emitted = false;
+    const racePromise = Promise.race([
+      takeOne(adapter.receive()).then(() => { emitted = true; }),
+      new Promise<void>(res => setTimeout(res, 30)),
+    ]);
+
     await mock._triggerReaction({
       type: 'reaction_added',
       reaction: 'ac-set-status',
@@ -725,25 +728,12 @@ describe('SlackAdapter — command events (reaction-based)', () => {
       item: { type: 'message', channel: CHANNEL_ID, ts: '200.0' },
     });
 
-    const event = await eventPromise;
+    await racePromise;
     await adapter.stop();
 
-    expect(event.type).toBe('command');
-    if (event.type === 'command') {
-      // Thread root (100.0) is used, not the reply ts (200.0)
-      expect(event.payload.conversation.conversation_id).toBe('100.0');
-      expect(event.payload.origin.message_id).toBe('200.0');
-      // Message text comes from the reply, not the root
-      expect(event.payload.messageText).toBe('reviewing_implementation');
-      // request_id resolved from thread root in registry
-      expect(event.payload.inferred_context?.request_id).toBe('req-001');
-    }
-
-    // Should have called history AND replies
-    expect(mock.client.conversations.history).toHaveBeenCalled();
-    expect(mock.client.conversations.replies).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: CHANNEL_ID, ts: '100.0', latest: '200.0', inclusive: true, limit: 1 }),
-    );
+    expect(emitted).toBe(false);
+    expect(mock.client.conversations.history).not.toHaveBeenCalled();
+    expect(mock.client.conversations.replies).not.toHaveBeenCalled();
   });
 
   it('reaction_added with unrecognized emoji → no event emitted', async () => {
@@ -968,7 +958,7 @@ describe('SlackAdapter — ignored message reaction', () => {
 });
 
 describe('SlackAdapter — reaction command messageText', () => {
-  it('populates messageText on CommandEvent from the text of the reacted-to message', async () => {
+  it('ac-set-status reaction on root message → no event emitted, no conversations.history call', async () => {
     const mock = makeMockApp({
       botUserId: 'UBOT',
       channels: [{ name: 'ch', id: 'C1' }],
@@ -981,20 +971,23 @@ describe('SlackAdapter — reaction command messageText', () => {
     );
     await adapter.start();
 
-    const eventPromise = takeOne(adapter.receive());
+    let emitted = false;
+    const racePromise = Promise.race([
+      takeOne(adapter.receive()).then(() => { emitted = true; }),
+      new Promise<void>(res => setTimeout(res, 30)),
+    ]);
+
     await mock._triggerReaction({
       reaction: 'ac-set-status',
       user: 'U1',
       item: { type: 'message', channel: 'C1', ts: '111.0' },
     });
-    const event = await eventPromise;
 
-    expect(event.type).toBe('command');
-    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
-    expect(cmd.command).toBe('run.set-status');
-    expect(cmd.messageText).toBe('reviewing_implementation');
-
+    await racePromise;
     await adapter.stop();
+
+    expect(emitted).toBe(false);
+    expect(mock.client.conversations.history).not.toHaveBeenCalled();
   });
 
   it('sets messageText to undefined when reacted-to message has no text', async () => {
