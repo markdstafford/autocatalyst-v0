@@ -12,6 +12,7 @@ import type { AgentRunEvent, AgentRunRequest, AgentRunner, AgentRoute, AgentSkil
 import { createLogger } from '../../core/logger.js';
 import { materializeOpenAIRuntimeSkills } from './openai-runtime-skill-materializer.js';
 import { buildSandboxEnvironment } from '../sandbox-environment.js';
+import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy, type RequestLogOptions } from '../anthropic/anthropic-beta-header-filter-proxy.js';
 
 const DEFAULT_OPENAI_AGENT_MAX_TURNS = 50;
 
@@ -35,6 +36,8 @@ export interface OpenAIAgentSdkAgentRunnerOptions {
   loggerProvider?: LoggerProvider;
   maxTurns?: number;
   sandboxEnvTokens?: string[];
+  requestLog?: RequestLogOptions;
+  startProxy?: typeof startAnthropicBetaHeaderFilterProxy;
 }
 
 export function skillRefsForRoute(route: AgentRoute): AgentSkillRef[] {
@@ -60,6 +63,9 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
   private readonly logger: pino.Logger;
   private readonly maxTurns: number;
   private readonly sandboxEnvTokens: string[];
+  private readonly requestLog: RequestLogOptions | undefined;
+  private readonly startProxy: typeof startAnthropicBetaHeaderFilterProxy;
+  private _proxy: Promise<AnthropicBetaHeaderFilterProxy> | null = null;
 
   constructor(
     private readonly apiKey: string,
@@ -76,6 +82,8 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
     });
     this.maxTurns = options?.maxTurns ?? DEFAULT_OPENAI_AGENT_MAX_TURNS;
     this.sandboxEnvTokens = options?.sandboxEnvTokens ?? [];
+    this.requestLog = options?.requestLog;
+    this.startProxy = options?.startProxy ?? startAnthropicBetaHeaderFilterProxy;
     const meter = options?.meter ?? metrics.getMeter('autocatalyst');
     this._agentTurns = meter.createCounter('autocatalyst.agent.turns', {
       unit: '{turn}',
@@ -104,12 +112,14 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
 
     // For Grove/Azure APIM: create a configured OpenAI client with api-key header and wrap it
     // in OpenAIResponsesModel so the custom base URL is applied to every agent HTTP request.
+    // Route through the loopback proxy so all requests can be logged/filtered.
     // For standard OpenAI endpoints: pass the model string and let the SDK use its default client.
     let agentModel: string | OpenAIResponsesModel;
-    if (this.baseUrl) {
+    const proxyUrl = await this.proxyBaseUrl();
+    if (proxyUrl) {
       const client = new OpenAI({
         apiKey: this.apiKey,
-        baseURL: this.baseUrl,
+        baseURL: proxyUrl,
         defaultHeaders: { 'api-key': this.apiKey },
       });
       // Cast required: resolution-mode difference between our OpenAI import and @openai/agents-openai's import
@@ -246,6 +256,36 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
         },
         'OpenAI Agents SDK run completed',
       );
+    }
+  }
+
+  private async proxyBaseUrl(): Promise<string | null> {
+    if (!this.baseUrl) return null;
+    if (!this._proxy) {
+      const pending = this.startProxy(this.baseUrl, {
+        stripBetaValues: [],
+        ...(this.requestLog ? { requestLog: this.requestLog } : {}),
+      });
+      this._proxy = pending;
+      pending.catch(() => {
+        if (this._proxy === pending) {
+          this._proxy = null;
+        }
+      });
+    }
+    const proxy = await this._proxy;
+    return proxy.baseUrl;
+  }
+
+  async close(): Promise<void> {
+    if (this._proxy) {
+      try {
+        const proxy = await this._proxy;
+        await proxy.close();
+      } catch {
+        // proxy never started successfully — nothing to close
+      }
+      this._proxy = null;
     }
   }
 }

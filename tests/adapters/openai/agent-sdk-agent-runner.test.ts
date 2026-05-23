@@ -4,6 +4,7 @@ import { run as sdkRun, setTracingDisabled } from '@openai/agents';
 import { skillRefsForRoute, OpenAIAgentSdkAgentRunner } from '../../../src/adapters/openai/agent-sdk-agent-runner.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
 import type { Counter, Histogram, Meter } from '@opentelemetry/api';
+import type { AnthropicBetaHeaderFilterProxy, RequestLogOptions } from '../../../src/adapters/anthropic/anthropic-beta-header-filter-proxy.js';
 
 const nullDest = { write: () => {} } as import('pino').DestinationStream;
 
@@ -666,5 +667,241 @@ describe('OpenAIAgentSdkAgentRunner', () => {
       log => log['level'] === 'warn' && log['event'] === 'sandbox.no_github_token',
     );
     expect(warning).toBeUndefined();
+  });
+});
+
+describe('OpenAIAgentSdkAgentRunner — proxy wiring', () => {
+  function makeMockProxy(): {
+    startProxy: typeof startAnthropicBetaHeaderFilterProxy;
+    getCapturedCalls: () => { targetBaseUrl: string; opts: unknown }[];
+  } {
+    const capturedCalls: { targetBaseUrl: string; opts: unknown }[] = [];
+    const startProxy = vi.fn(async (targetBaseUrl: string, opts: unknown): Promise<AnthropicBetaHeaderFilterProxy> => {
+      capturedCalls.push({ targetBaseUrl, opts });
+      const { createServer } = await import('node:http');
+      const server = createServer();
+      server.listen(0, '127.0.0.1');
+      await new Promise<void>(r => server.once('listening', r));
+      const address = server.address() as { port: number };
+      const close = async () => {
+        server.close();
+        await new Promise<void>(r => server.once('close', r));
+      };
+      return {
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        server,
+        close,
+      };
+    });
+    return {
+      startProxy: startProxy as unknown as typeof startAnthropicBetaHeaderFilterProxy,
+      getCapturedCalls: () => capturedCalls,
+    };
+  }
+
+  test('routes Grove base URL through loopback proxy — startProxy called with target URL', async () => {
+    const { startProxy, getCapturedCalls } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'grove-key-123',
+      'https://grove.internal/openai',
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy },
+    );
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    await runner.close();
+
+    expect(getCapturedCalls()).toHaveLength(1);
+    expect(getCapturedCalls()[0].targetBaseUrl).toBe('https://grove.internal/openai');
+  });
+
+  test('does not start proxy when no baseUrl is set', async () => {
+    const { startProxy, getCapturedCalls } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'sk-test',
+      undefined,
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy },
+    );
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    await runner.close();
+
+    expect(getCapturedCalls()).toHaveLength(0);
+  });
+
+  test('passes requestLog to startProxy when configured', async () => {
+    const requestLog: RequestLogOptions = { logDir: '/tmp/test-request-logs' };
+    const { startProxy, getCapturedCalls } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'grove-key-123',
+      'https://grove.internal/openai',
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy, requestLog },
+    );
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    await runner.close();
+
+    expect(getCapturedCalls()).toHaveLength(1);
+    const passedOpts = getCapturedCalls()[0].opts as { requestLog?: RequestLogOptions };
+    expect(passedOpts.requestLog).toEqual(requestLog);
+  });
+
+  test('does not pass requestLog when not configured', async () => {
+    const { startProxy, getCapturedCalls } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'grove-key-123',
+      'https://grove.internal/openai',
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy },
+    );
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    await runner.close();
+
+    expect(getCapturedCalls()).toHaveLength(1);
+    const passedOpts = getCapturedCalls()[0].opts as { requestLog?: RequestLogOptions };
+    expect(passedOpts.requestLog).toBeUndefined();
+  });
+
+  test('proxy is shared across multiple run() calls', async () => {
+    const { startProxy, getCapturedCalls } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'grove-key-123',
+      'https://grove.internal/openai',
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy },
+    );
+
+    await collect(runner.run({ route: { task: 'question.answer' }, working_directory: '/tmp/ws', prompt: 'first' }));
+    await collect(runner.run({ route: { task: 'question.answer' }, working_directory: '/tmp/ws', prompt: 'second' }));
+
+    await runner.close();
+
+    expect(getCapturedCalls()).toHaveLength(1);
+  });
+
+  test('close() stops the proxy', async () => {
+    const { startProxy } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'grove-key-123',
+      'https://grove.internal/openai',
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy },
+    );
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    // Get the proxy instance to verify it was closed
+    const proxyPromise = (runner as unknown as { _proxy: Promise<AnthropicBetaHeaderFilterProxy> })._proxy;
+    expect(proxyPromise).not.toBeNull();
+    const proxy = await proxyPromise;
+
+    await runner.close();
+
+    // After close, _proxy should be null
+    expect((runner as unknown as { _proxy: Promise<AnthropicBetaHeaderFilterProxy> | null })._proxy).toBeNull();
+
+    // The server should no longer be listening
+    expect((proxy as unknown as { server: { listening: boolean } }).server.listening).toBe(false);
+  });
+
+  test('OpenAI client is constructed with proxy loopback URL, not the original base URL', async () => {
+    const { startProxy } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    let capturedAgent: unknown;
+    const runFn = vi.fn().mockImplementation(async function* (agent: unknown) {
+      capturedAgent = agent;
+    });
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'grove-key-123',
+      'https://grove.internal/openai',
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy },
+    );
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    await runner.close();
+
+    // The agent's model should be an OpenAIResponsesModel whose internal client
+    // uses the proxy loopback URL, not the original Grove base URL.
+    const clientBaseURL = (capturedAgent as any)?.model?._client?.baseURL as string | undefined;
+    expect(clientBaseURL).toBeDefined();
+    expect(clientBaseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+/);
+    expect(clientBaseURL).not.toBe('https://grove.internal/openai');
+  });
+
+  test('startProxy is called with stripBetaValues: [] for OpenAI traffic', async () => {
+    const { startProxy, getCapturedCalls } = makeMockProxy();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner(
+      'grove-key-123',
+      'https://grove.internal/openai',
+      'gpt-4o',
+      { runFn, materializeSkills, logDestination: nullDest, startProxy },
+    );
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    await runner.close();
+
+    expect(getCapturedCalls()).toHaveLength(1);
+    const passedOpts = getCapturedCalls()[0].opts as { stripBetaValues?: string[] };
+    expect(passedOpts.stripBetaValues).toEqual([]);
   });
 });
