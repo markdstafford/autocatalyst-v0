@@ -45,6 +45,13 @@ export function classifyMessage(
     const emojiKey = `ac-${commandMatch[1]}`;
     const commandName = EMOJI_COMMAND_TABLE[emojiKey];
     if (commandName) {
+      // MESSAGE_ONLY_COMMANDS require a registered run thread — reject root and unregistered messages
+      if (MESSAGE_ONLY_COMMANDS.has(commandName)) {
+        const isReply = message.thread_ts !== undefined && message.thread_ts !== message.ts;
+        if (!isReply || registry.resolve(message.thread_ts!) === undefined) {
+          return { intent: 'ignore' };
+        }
+      }
       const stripped = (message.text ?? '').replace(/:ac-[a-z0-9_-]+:/, '').trim();
       const args = stripped ? stripped.split(/\s+/) : [];
       return { intent: 'command', command: commandName, args };

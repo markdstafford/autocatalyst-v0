@@ -613,6 +613,98 @@ describe('SlackAdapter — command events (message-based)', () => {
   });
 });
 
+describe('SlackAdapter — ac-set-status message command thread guard', () => {
+  const BOT_ID = 'UBOT001';
+  const CHANNEL_ID = 'C123';
+  const CHANNEL_NAME = 'my-channel';
+
+  it(':ac-set-status: in root message → no event emitted, ac-message-ignored reaction added', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    let emitted = false;
+    const racePromise = Promise.race([
+      takeOne(adapter.receive()).then(() => { emitted = true; }),
+      new Promise<void>(res => setTimeout(res, 30)),
+    ]);
+
+    await mock._triggerMessage({
+      text: ':ac-set-status: reviewing_implementation',
+      user: 'U123',
+      ts: '100.0',
+      channel: CHANNEL_ID,
+    });
+
+    await racePromise;
+    await adapter.stop();
+
+    expect(emitted).toBe(false);
+    expect(mock.client.reactions.add).toHaveBeenCalledWith({
+      channel: CHANNEL_ID,
+      timestamp: '100.0',
+      name: 'ac-message-ignored',
+    });
+  });
+
+  it(':ac-set-status: in unregistered thread → no event emitted', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    let emitted = false;
+    const racePromise = Promise.race([
+      takeOne(adapter.receive()).then(() => { emitted = true; }),
+      new Promise<void>(res => setTimeout(res, 30)),
+    ]);
+
+    await mock._triggerMessage({
+      text: ':ac-set-status: reviewing_implementation',
+      user: 'U123',
+      ts: '200.0',
+      thread_ts: '100.0', // not registered
+      channel: CHANNEL_ID,
+    });
+
+    await racePromise;
+    await adapter.stop();
+
+    expect(emitted).toBe(false);
+  });
+
+  it(':ac-set-status: in registered run thread → run.set-status command emitted', async () => {
+    const { ThreadRegistry } = await import('../../../src/adapters/slack/thread-registry.js');
+    const registry = new ThreadRegistry();
+    registry.register('100.0', 'req-001');
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: CHANNEL_NAME },
+      { logDestination: nullDest, registry },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: ':ac-set-status: reviewing_implementation',
+      user: 'U123',
+      ts: '200.0',
+      thread_ts: '100.0',
+      channel: CHANNEL_ID,
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.command).toBe('run.set-status');
+      expect(event.payload.args).toEqual(['reviewing_implementation']);
+      expect(event.payload.inferred_context?.request_id).toBe('req-001');
+    }
+  });
+});
+
 describe('SlackAdapter — command events (reaction-based)', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
