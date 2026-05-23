@@ -181,4 +181,12 @@ describe('printUsage', () => {
     spy.mockRestore();
     expect(output).toContain('--log-requests');
   });
+
+  it('describes --log-requests as dumping request and response diagnostics', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    printUsage();
+    const output = spy.mock.calls[0]?.[0] as string;
+    spy.mockRestore();
+    expect(output).toMatch(/response/i);
+  });
 });

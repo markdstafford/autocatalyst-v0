@@ -75,7 +75,7 @@ export function printUsage(): void {
 
 Options:
   --repo <path> [<path2>...]   Path(s) to target repository/repositories
-  --log-requests               Dump outbound proxy requests to <workspace root>/request-logs/
+  --log-requests               Dump proxied request and response diagnostics to <workspace root>/request-logs/
   --help                       Show this help message
 `);
 }

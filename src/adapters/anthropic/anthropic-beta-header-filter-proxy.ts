@@ -33,6 +33,13 @@ const HOP_BY_HOP_RESPONSE_HEADERS = new Set([
 
 const CREDENTIAL_HEADERS = new Set(['x-api-key', 'api-key', 'authorization']);
 
+const CREDENTIAL_RESPONSE_HEADERS = new Set([
+  'set-cookie',
+  'authorization',
+  'www-authenticate',
+  'proxy-authenticate',
+]);
+
 export interface RequestLogOptions {
   logDir: string;
 }
@@ -138,15 +145,28 @@ async function handleProxyRequest(
   const headers = requestHeaders(req.headers, stripBetaValues);
   const body = await requestBody(req);
 
+  let dumpId: string | undefined;
   if (requestLog) {
-    await dumpRequest(targetUrl, req.method ?? 'GET', headers, body, requestLog, logger);
+    dumpId = generateDumpId();
+    await dumpRequest(targetUrl, req.method ?? 'GET', headers, body, requestLog, logger, dumpId);
   }
 
-  const response = await fetch(targetUrl, {
-    method: req.method,
-    headers,
-    body,
-  });
+  const fetchStart = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(targetUrl, {
+      method: req.method,
+      headers,
+      body,
+    });
+  } catch (fetchErr) {
+    if (requestLog && dumpId) {
+      await dumpResponseError(targetUrl, req.method ?? 'GET', dumpId, fetchStart, fetchErr, requestLog, logger);
+    }
+    throw fetchErr;
+  }
+
+  const headersTime = Date.now() - fetchStart;
 
   logger.debug(
     { event: 'proxy.request_proxied', method: req.method, upstream_status: response.status },
@@ -154,17 +174,127 @@ async function handleProxyRequest(
   );
 
   res.writeHead(response.status, response.statusText, responseHeaders(response.headers));
+
   if (!response.body) {
+    if (requestLog && dumpId) {
+      await dumpResponse(targetUrl, response, {
+        dumpId,
+        method: req.method ?? 'GET',
+        fetchStart,
+        headersTime,
+        firstByteTime: null,
+        bodyBytes: 0,
+        streamState: 'no_body',
+        captureChunks: [],
+        captureTruncated: false,
+      }, requestLog, logger);
+    }
     res.end();
     return;
   }
-  await new Promise<void>((resolve, reject) => {
-    Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
-      .on('error', reject)
-      .pipe(res)
-      .on('error', reject)
-      .on('finish', resolve);
-  });
+
+  const captureLimit = 64 * 1024;
+  const captureChunks: Buffer[] = [];
+  let captureSize = 0;
+  let captureTruncated = false;
+  let firstByteTime: number | null = null;
+  let bodyBytes = 0;
+  let streamState: 'completed' | 'interrupted' = 'completed';
+  let streamError: string | undefined;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settleResolve = () => { if (!settled) { settled = true; resolve(); } };
+      const settleReject = (err: Error) => { if (!settled) { settled = true; reject(err); } };
+
+      let finishFired = false;
+      const readable = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
+
+      readable
+        .on('error', (err: Error) => {
+          streamState = 'interrupted';
+          streamError = String(err);
+          settleReject(err);
+        })
+        .on('data', (chunk: Buffer) => {
+          if (firstByteTime === null) firstByteTime = Date.now() - fetchStart;
+          bodyBytes += chunk.byteLength;
+          if (!captureTruncated) {
+            const space = captureLimit - captureSize;
+            if (space > 0) {
+              captureChunks.push(space >= chunk.byteLength ? chunk : chunk.slice(0, space));
+              captureSize += Math.min(chunk.byteLength, space);
+              if (captureSize >= captureLimit) captureTruncated = true;
+            }
+          }
+          const ok = res.write(chunk);
+          if (!ok) {
+            readable.pause();
+            res.once('drain', () => readable.resume());
+          }
+        })
+        .on('end', () => {
+          res.end();
+        });
+
+      res.on('finish', () => {
+        finishFired = true;
+        settleResolve();
+      });
+      res.on('close', () => {
+        if (!finishFired) {
+          streamState = 'interrupted';
+          streamError = 'client disconnected before response finish';
+          readable.destroy();
+        }
+        settleResolve();
+      });
+      res.on('error', (err: Error) => {
+        streamState = 'interrupted';
+        streamError = String(err);
+        settleReject(err);
+      });
+    });
+  } catch (err) {
+    if (requestLog && dumpId) {
+      await dumpResponse(targetUrl, response, {
+        dumpId,
+        method: req.method ?? 'GET',
+        fetchStart,
+        headersTime,
+        firstByteTime,
+        bodyBytes,
+        streamState: 'interrupted',
+        captureChunks,
+        captureTruncated,
+        streamError: String(err),
+      }, requestLog, logger);
+    }
+    throw err;
+  }
+
+  if (requestLog && dumpId) {
+    await dumpResponse(targetUrl, response, {
+      dumpId,
+      method: req.method ?? 'GET',
+      fetchStart,
+      headersTime,
+      firstByteTime,
+      bodyBytes,
+      streamState,
+      captureChunks,
+      captureTruncated,
+      streamError,
+    }, requestLog, logger);
+  }
+}
+
+function generateDumpId(): string {
+  const now = new Date();
+  const ts = now.toISOString().replace(/[:.]/g, '-');
+  const suffix = randomBytes(4).toString('hex');
+  return `${ts}-${suffix}`;
 }
 
 async function dumpRequest(
@@ -174,6 +304,7 @@ async function dumpRequest(
   body: ArrayBuffer | undefined,
   requestLog: RequestLogOptions,
   logger: pino.Logger,
+  dumpId: string,
 ): Promise<void> {
   const start = Date.now();
   try {
@@ -195,6 +326,7 @@ async function dumpRequest(
     const now = new Date();
     const record: Record<string, unknown> = {
       timestamp: now.toISOString(),
+      dump_id: dumpId,
       method,
       url: targetUrl.toString(),
       headers: redactedHeaders,
@@ -202,9 +334,7 @@ async function dumpRequest(
     if (parsedBody !== undefined) record['body'] = parsedBody;
     if (bodyRaw !== undefined) record['body_raw'] = bodyRaw;
 
-    const ts = now.toISOString().replace(/[:.]/g, '-');
-    const suffix = randomBytes(4).toString('hex');
-    const filename = `${ts}-${suffix}.json`;
+    const filename = `${dumpId}.request.json`;
     const filePath = join(requestLog.logDir, filename);
     await writeFile(filePath, JSON.stringify(record, null, 2), { mode: 0o600 });
 
@@ -228,6 +358,131 @@ async function dumpRequest(
   }
 }
 
+interface ResponseObservation {
+  dumpId: string;
+  method: string;
+  fetchStart: number;
+  headersTime: number;
+  firstByteTime: number | null;
+  bodyBytes: number;
+  streamState: 'completed' | 'interrupted' | 'no_body';
+  captureChunks: Buffer[];
+  captureTruncated: boolean;
+  streamError?: string;
+}
+
+async function dumpResponse(
+  targetUrl: URL,
+  response: Response,
+  obs: ResponseObservation,
+  requestLog: RequestLogOptions,
+  logger: pino.Logger,
+): Promise<void> {
+  const start = Date.now();
+  try {
+    const totalDuration = Date.now() - obs.fetchStart;
+    const filteredHeaders = responseHeaders(response.headers);
+    const redactedHeaders = redactResponseHeadersForDump(filteredHeaders);
+
+    const { tokens: outputTokens, source: tokenCountSource } = obs.streamState === 'completed'
+      ? extractOutputTokens(obs.captureChunks, obs.captureTruncated)
+      : { tokens: null, source: `unavailable_${obs.streamState}` };
+
+    const record: Record<string, unknown> = {
+      timestamp: new Date(obs.fetchStart).toISOString(),
+      request_dump_id: obs.dumpId,
+      request_file: `${obs.dumpId}.request.json`,
+      method: obs.method,
+      url: targetUrl.toString(),
+      status: response.status,
+      status_text: response.statusText,
+      headers: redactedHeaders,
+      timing_ms: {
+        headers: obs.headersTime,
+        first_body_byte: obs.firstByteTime,
+        total: totalDuration,
+      },
+      body_bytes: obs.bodyBytes,
+      body_capture_truncated: obs.captureTruncated,
+      body_parseable_json: tokenCountSource === 'json' || tokenCountSource === 'json_no_usage',
+      output_tokens: outputTokens,
+      token_count_source: tokenCountSource,
+      stream_state: obs.streamState,
+    };
+
+    if (obs.streamError) record['stream_error'] = obs.streamError;
+
+    const filename = `${obs.dumpId}.response.json`;
+    const filePath = join(requestLog.logDir, filename);
+    await writeFile(filePath, JSON.stringify(record, null, 2), { mode: 0o600 });
+
+    logger.debug(
+      {
+        event: 'proxy.response_dumped',
+        path: filePath,
+        method: obs.method,
+        target_host: targetUrl.hostname,
+        status: response.status,
+        duration_ms: totalDuration,
+        body_bytes: obs.bodyBytes,
+        stream_state: obs.streamState,
+        dump_write_ms: Date.now() - start,
+      },
+      'Proxy response dumped',
+    );
+  } catch (err) {
+    logger.warn(
+      { event: 'proxy.response_dump_failed', error: String(err), duration_ms: Date.now() - start },
+      'Proxy response dump failed',
+    );
+  }
+}
+
+async function dumpResponseError(
+  targetUrl: URL,
+  method: string,
+  dumpId: string,
+  fetchStart: number,
+  error: unknown,
+  requestLog: RequestLogOptions,
+  logger: pino.Logger,
+): Promise<void> {
+  const start = Date.now();
+  try {
+    const record: Record<string, unknown> = {
+      timestamp: new Date(fetchStart).toISOString(),
+      request_dump_id: dumpId,
+      request_file: `${dumpId}.request.json`,
+      method,
+      url: targetUrl.toString(),
+      elapsed_ms: Date.now() - fetchStart,
+      error: String(error),
+      stream_state: 'fetch_error',
+    };
+
+    const filename = `${dumpId}.response-error.json`;
+    const filePath = join(requestLog.logDir, filename);
+    await writeFile(filePath, JSON.stringify(record, null, 2), { mode: 0o600 });
+
+    logger.debug(
+      {
+        event: 'proxy.response_fetch_failed',
+        path: filePath,
+        method,
+        target_host: targetUrl.hostname,
+        elapsed_ms: Date.now() - fetchStart,
+        error: String(error),
+      },
+      'Proxy fetch failed before response headers',
+    );
+  } catch (err) {
+    logger.warn(
+      { event: 'proxy.response_dump_failed', error: String(err), duration_ms: Date.now() - start },
+      'Proxy response-error dump failed',
+    );
+  }
+}
+
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
@@ -241,6 +496,34 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
 function redactCredentialValue(value: string): string {
   if (value.length <= 8) return '[redacted]';
   return `${value.slice(0, 4)}redacted${value.slice(-4)}`;
+}
+
+export function redactResponseHeadersForDump(headers: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    result[name] = CREDENTIAL_RESPONSE_HEADERS.has(name.toLowerCase()) ? '[redacted]' : value;
+  }
+  return result;
+}
+
+export function extractOutputTokens(
+  chunks: Buffer[],
+  truncated: boolean,
+): { tokens: number | null; source: string } {
+  if (truncated) return { tokens: null, source: 'capture_truncated' };
+  if (chunks.length === 0) return { tokens: null, source: 'json_parse_failed' };
+  const text = Buffer.concat(chunks).toString('utf8');
+  try {
+    const json = JSON.parse(text) as Record<string, unknown>;
+    const usage = json['usage'] as Record<string, unknown> | undefined;
+    if (usage) {
+      if (typeof usage['output_tokens'] === 'number') return { tokens: usage['output_tokens'], source: 'json' };
+      if (typeof usage['completion_tokens'] === 'number') return { tokens: usage['completion_tokens'], source: 'json' };
+    }
+    return { tokens: null, source: 'json_no_usage' };
+  } catch {
+    return { tokens: null, source: 'json_parse_failed' };
+  }
 }
 
 function targetUrlForRequest(targetBase: URL, requestUrl: string | undefined): URL {
