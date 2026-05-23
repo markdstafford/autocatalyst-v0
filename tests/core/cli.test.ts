@@ -128,6 +128,42 @@ describe('parseArgs — multi-repo', () => {
   });
 });
 
+describe('parseArgs — --log-requests', () => {
+  it('parses --log-requests flag', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    try {
+      const result = parseArgs(['--repo', tempDir, '--log-requests']);
+      expect(result.logRequests).toBe(true);
+      expect(result.repoPaths).toEqual([tempDir]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults logRequests to false when --log-requests is absent', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    try {
+      const result = parseArgs(['--repo', tempDir]);
+      expect(result.logRequests).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--log-requests before --repo paths still collects all paths', () => {
+    const dir1 = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    const dir2 = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    try {
+      const result = parseArgs(['--log-requests', '--repo', dir1, dir2]);
+      expect(result.logRequests).toBe(true);
+      expect(result.repoPaths).toHaveLength(2);
+    } finally {
+      rmSync(dir1, { recursive: true, force: true });
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('printUsage', () => {
   it('documents both command forms', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -136,5 +172,13 @@ describe('printUsage', () => {
     spy.mockRestore();
     expect(output).toContain('autocatalyst --repo');
     expect(output).toContain('autocatalyst init');
+  });
+
+  it('documents --log-requests option', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    printUsage();
+    const output = spy.mock.calls[0]?.[0] as string;
+    spy.mockRestore();
+    expect(output).toContain('--log-requests');
   });
 });
