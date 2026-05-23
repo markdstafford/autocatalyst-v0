@@ -332,3 +332,29 @@ describe('RoutingAwareAgentRunner dispatch', () => {
     expect(openAiRunner.run).not.toHaveBeenCalled();
   });
 });
+
+describe('buildAgentRunner — requestLogDir threading', () => {
+  it('returns ClaudeAgentSdkAgentRunner when requestLogDir is provided', () => {
+    const runner = buildAgentRunner(
+      makeAgentResolvedAi('claude_agent_sdk'),
+      noopLogger,
+      undefined,
+      [],
+      undefined,
+      '/tmp/test-workspace/request-logs',
+    );
+    expect(runner).toBeInstanceOf(ClaudeAgentSdkAgentRunner);
+  });
+
+  it('returns ClaudeAgentSdkAgentRunner when requestLogDir is undefined (backward compat)', () => {
+    const runner = buildAgentRunner(
+      makeAgentResolvedAi('claude_agent_sdk'),
+      noopLogger,
+      undefined,
+      [],
+      undefined,
+      undefined,
+    );
+    expect(runner).toBeInstanceOf(ClaudeAgentSdkAgentRunner);
+  });
+});
