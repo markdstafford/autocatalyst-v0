@@ -110,7 +110,7 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
       { event: 'notion_spec.properties_created', page_id: pageId, duration_ms },
       'Spec database entry created',
     );
-    return { id: pageId, url: pageUrl };
+    return { id: pageId, url: pageUrl, label: 'View spec' };
   }
 
   async getContent(publisher_ref: string, stripHtml = false): Promise<string> {

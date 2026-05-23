@@ -168,7 +168,7 @@ describe('NotionPublisher.createArtifact', () => {
     const result = await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
     expect(callOrder).toEqual(['pages.create', 'pages.updateMarkdown']);
-    expect(result).toEqual({ id: 'page-abc-123-xyz', url: 'https://notion.so/pageabc123xyz' });
+    expect(result).toEqual({ id: 'page-abc-123-xyz', url: 'https://notion.so/pageabc123xyz', label: 'View spec' });
   });
 
   it('returns publication metadata', async () => {
@@ -178,7 +178,15 @@ describe('NotionPublisher.createArtifact', () => {
     const specPath = makeSpecFile();
     const result = await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
-    expect(result).toEqual({ id: 'returned-page-id', url: 'https://notion.so/returnedpageid' });
+    expect(result).toEqual({ id: 'returned-page-id', url: 'https://notion.so/returnedpageid', label: 'View spec' });
+  });
+
+  it('returns label "View spec" as part of the publication result', async () => {
+    const client = makeMockNotionClient('page-label-test');
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
+    const specPath = makeSpecFile();
+    const result = await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
+    expect(result.label).toBe('View spec');
   });
 
   it('throws if pages.create rejects; updateMarkdown is never called', async () => {
