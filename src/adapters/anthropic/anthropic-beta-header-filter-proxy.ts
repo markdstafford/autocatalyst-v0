@@ -33,6 +33,13 @@ const HOP_BY_HOP_RESPONSE_HEADERS = new Set([
 
 const CREDENTIAL_HEADERS = new Set(['x-api-key', 'api-key', 'authorization']);
 
+const CREDENTIAL_RESPONSE_HEADERS = new Set([
+  'set-cookie',
+  'authorization',
+  'www-authenticate',
+  'proxy-authenticate',
+]);
+
 export interface RequestLogOptions {
   logDir: string;
 }
@@ -250,6 +257,34 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
 function redactCredentialValue(value: string): string {
   if (value.length <= 8) return '[redacted]';
   return `${value.slice(0, 4)}redacted${value.slice(-4)}`;
+}
+
+export function redactResponseHeadersForDump(headers: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    result[name] = CREDENTIAL_RESPONSE_HEADERS.has(name.toLowerCase()) ? '[redacted]' : value;
+  }
+  return result;
+}
+
+export function extractOutputTokens(
+  chunks: Buffer[],
+  truncated: boolean,
+): { tokens: number | null; source: string } {
+  if (truncated) return { tokens: null, source: 'capture_truncated' };
+  if (chunks.length === 0) return { tokens: null, source: 'json_parse_failed' };
+  const text = Buffer.concat(chunks).toString('utf8');
+  try {
+    const json = JSON.parse(text) as Record<string, unknown>;
+    const usage = json['usage'] as Record<string, unknown> | undefined;
+    if (usage) {
+      if (typeof usage['output_tokens'] === 'number') return { tokens: usage['output_tokens'], source: 'json' };
+      if (typeof usage['completion_tokens'] === 'number') return { tokens: usage['completion_tokens'], source: 'json' };
+    }
+    return { tokens: null, source: 'json_no_usage' };
+  } catch {
+    return { tokens: null, source: 'json_parse_failed' };
+  }
 }
 
 function targetUrlForRequest(targetBase: URL, requestUrl: string | undefined): URL {

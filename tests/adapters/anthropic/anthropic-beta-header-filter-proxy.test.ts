@@ -6,6 +6,10 @@ import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, test } from 'vitest';
 import { startAnthropicBetaHeaderFilterProxy } from '../../../src/adapters/anthropic/anthropic-beta-header-filter-proxy.js';
+import {
+  redactResponseHeadersForDump,
+  extractOutputTokens,
+} from '../../../src/adapters/anthropic/anthropic-beta-header-filter-proxy.js';
 
 async function listen(server: Server): Promise<number> {
   server.listen(0, '127.0.0.1');
@@ -325,6 +329,84 @@ describe('Anthropic beta header filter proxy', () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ forwarded: true });
       await proxy.close();
+    });
+  });
+});
+
+describe('response dump helpers', () => {
+  describe('redactResponseHeadersForDump', () => {
+    it('passes through non-sensitive headers', () => {
+      const result = redactResponseHeadersForDump({
+        'content-type': 'application/json',
+        'x-request-id': 'abc123',
+        'x-ratelimit-remaining-requests': '42',
+      });
+      expect(result['content-type']).toBe('application/json');
+      expect(result['x-request-id']).toBe('abc123');
+      expect(result['x-ratelimit-remaining-requests']).toBe('42');
+    });
+
+    it('redacts set-cookie', () => {
+      const result = redactResponseHeadersForDump({ 'set-cookie': 'session=abc123; Path=/' });
+      expect(result['set-cookie']).toBe('[redacted]');
+    });
+
+    it('redacts authorization in response headers', () => {
+      const result = redactResponseHeadersForDump({ 'authorization': 'Bearer tok_xxxx' });
+      expect(result['authorization']).toBe('[redacted]');
+    });
+
+    it('redacts www-authenticate', () => {
+      const result = redactResponseHeadersForDump({ 'www-authenticate': 'Bearer realm="example"' });
+      expect(result['www-authenticate']).toBe('[redacted]');
+    });
+
+    it('redacts proxy-authenticate', () => {
+      const result = redactResponseHeadersForDump({ 'proxy-authenticate': 'Basic realm="corp"' });
+      expect(result['proxy-authenticate']).toBe('[redacted]');
+    });
+  });
+
+  describe('extractOutputTokens', () => {
+    it('extracts usage.output_tokens from Anthropic-style JSON', () => {
+      const body = Buffer.from(JSON.stringify({ usage: { input_tokens: 100, output_tokens: 250 } }));
+      const result = extractOutputTokens([body], false);
+      expect(result.tokens).toBe(250);
+      expect(result.source).toBe('json');
+    });
+
+    it('extracts usage.completion_tokens as OpenAI chat fallback', () => {
+      const body = Buffer.from(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 75 } }));
+      const result = extractOutputTokens([body], false);
+      expect(result.tokens).toBe(75);
+      expect(result.source).toBe('json');
+    });
+
+    it('returns null when JSON has no usage field', () => {
+      const body = Buffer.from(JSON.stringify({ id: 'msg_abc', content: [] }));
+      const result = extractOutputTokens([body], false);
+      expect(result.tokens).toBeNull();
+      expect(result.source).toBe('json_no_usage');
+    });
+
+    it('returns null when capture is truncated', () => {
+      const body = Buffer.from(JSON.stringify({ usage: { output_tokens: 100 } }));
+      const result = extractOutputTokens([body], true);
+      expect(result.tokens).toBeNull();
+      expect(result.source).toBe('capture_truncated');
+    });
+
+    it('returns null when body is not valid JSON', () => {
+      const body = Buffer.from('data: {"type":"content_block_delta"}\n\ndata: [DONE]\n');
+      const result = extractOutputTokens([body], false);
+      expect(result.tokens).toBeNull();
+      expect(result.source).toBe('json_parse_failed');
+    });
+
+    it('returns null when chunks are empty', () => {
+      const result = extractOutputTokens([], false);
+      expect(result.tokens).toBeNull();
+      expect(result.source).toBe('json_parse_failed');
     });
   });
 });
