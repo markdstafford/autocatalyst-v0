@@ -2,7 +2,7 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, statSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, test } from 'vitest';
 import {
@@ -533,6 +533,111 @@ describe('Anthropic beta header filter proxy', () => {
       expect(dump.output_tokens).toBeNull();
       expect(typeof dump.token_count_source).toBe('string');
       expect(dump.stream_state).toBe('completed');
+    });
+
+    test('client disconnect before upstream stream completes logs stream_state interrupted', async () => {
+      const upstream = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('partial-data');
+        // Hold the response open — the test destroys the client socket to simulate a disconnect
+      });
+      servers.push(upstream);
+      const upstreamPort = await listen(upstream);
+
+      const proxy = await startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
+        stripBetaValues: [],
+        requestLog: { logDir },
+      });
+      servers.push(proxy.server);
+
+      const addr = new URL(proxy.baseUrl);
+      await new Promise<void>((resolve) => {
+        const req = httpRequest({
+          hostname: addr.hostname,
+          port: Number(addr.port),
+          path: '/v1/messages',
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+        }, (incomingRes) => {
+          incomingRes.once('data', () => {
+            req.socket?.destroy();
+            resolve();
+          });
+        });
+        req.on('error', () => resolve());
+        req.write('{}');
+        req.end();
+      });
+
+      await new Promise(r => setTimeout(r, 100));
+      await proxy.close();
+
+      const files = readdirSync(logDir);
+      const responseFile = files.find(f => f.endsWith('.response.json'));
+      expect(responseFile).toBeDefined();
+      const dump = JSON.parse(readFileSync(join(logDir, responseFile!), 'utf8')) as Record<string, unknown>;
+      expect(dump.stream_state).toBe('interrupted');
+    });
+
+    test('slow-reader streaming: backpressure is respected and all bytes reach the client', async () => {
+      const chunkSize = 64 * 1024;
+      const chunkCount = 8;
+      const chunkData = Buffer.alloc(chunkSize, 0x61);
+
+      const upstream = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        let i = 0;
+        const send = () => {
+          if (i < chunkCount) {
+            const ok = res.write(chunkData);
+            i++;
+            if (ok) setImmediate(send);
+            else res.once('drain', send);
+          } else {
+            res.end();
+          }
+        };
+        send();
+      });
+      servers.push(upstream);
+      const upstreamPort = await listen(upstream);
+
+      const proxy = await startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
+        stripBetaValues: [],
+        requestLog: { logDir },
+      });
+      servers.push(proxy.server);
+
+      const receivedChunks: Buffer[] = [];
+      const addr = new URL(proxy.baseUrl);
+      await new Promise<void>((resolve, reject) => {
+        const req = httpRequest({
+          hostname: addr.hostname,
+          port: Number(addr.port),
+          path: '/v1/messages',
+          method: 'POST',
+        }, (incomingRes) => {
+          incomingRes.pause();
+          setTimeout(() => incomingRes.resume(), 20);
+          incomingRes.on('data', (chunk: Buffer) => receivedChunks.push(chunk));
+          incomingRes.on('end', resolve);
+          incomingRes.on('error', reject);
+        });
+        req.on('error', reject);
+        req.write('{}');
+        req.end();
+      });
+
+      await new Promise(r => setTimeout(r, 50));
+      await proxy.close();
+
+      expect(Buffer.concat(receivedChunks).byteLength).toBe(chunkSize * chunkCount);
+
+      const files = readdirSync(logDir);
+      const responseFile = files.find(f => f.endsWith('.response.json'))!;
+      const dump = JSON.parse(readFileSync(join(logDir, responseFile), 'utf8')) as Record<string, unknown>;
+      expect(dump.stream_state).toBe('completed');
+      expect(dump.body_bytes).toBe(chunkSize * chunkCount);
     });
 
     test('response dump write failure still forwards the upstream response', async () => {

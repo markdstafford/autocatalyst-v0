@@ -204,11 +204,18 @@ async function handleProxyRequest(
 
   try {
     await new Promise<void>((resolve, reject) => {
-      Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
+      let settled = false;
+      const settleResolve = () => { if (!settled) { settled = true; resolve(); } };
+      const settleReject = (err: Error) => { if (!settled) { settled = true; reject(err); } };
+
+      let finishFired = false;
+      const readable = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
+
+      readable
         .on('error', (err: Error) => {
           streamState = 'interrupted';
           streamError = String(err);
-          reject(err);
+          settleReject(err);
         })
         .on('data', (chunk: Buffer) => {
           if (firstByteTime === null) firstByteTime = Date.now() - fetchStart;
@@ -221,16 +228,32 @@ async function handleProxyRequest(
               if (captureSize >= captureLimit) captureTruncated = true;
             }
           }
-          res.write(chunk);
+          const ok = res.write(chunk);
+          if (!ok) {
+            readable.pause();
+            res.once('drain', () => readable.resume());
+          }
         })
         .on('end', () => {
           res.end();
-          resolve();
         });
+
+      res.on('finish', () => {
+        finishFired = true;
+        settleResolve();
+      });
+      res.on('close', () => {
+        if (!finishFired) {
+          streamState = 'interrupted';
+          streamError = 'client disconnected before response finish';
+          readable.destroy();
+        }
+        settleResolve();
+      });
       res.on('error', (err: Error) => {
         streamState = 'interrupted';
         streamError = String(err);
-        reject(err);
+        settleReject(err);
       });
     });
   } catch (err) {
