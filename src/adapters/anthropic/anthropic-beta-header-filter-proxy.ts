@@ -99,7 +99,12 @@ export async function startAnthropicBetaHeaderFilterProxy(
   }
 
   if (requestLog) {
-    await mkdir(requestLog.logDir, { recursive: true, mode: 0o700 });
+    try {
+      await mkdir(requestLog.logDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      server.close();
+      throw err;
+    }
   }
 
   const port = address.port;
