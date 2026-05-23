@@ -435,7 +435,7 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     expect(call.options.env['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: sk-grove-test-key');
   });
 
-  test('passes custom Anthropic base URLs through unchanged without configured beta values to strip', async () => {
+  test('routes custom Anthropic base URLs through a loopback proxy even without configured beta values to strip', async () => {
     const queryFn = vi.fn().mockImplementation(async function* () {
       yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
     });
@@ -456,10 +456,12 @@ describe('ClaudeAgentSdkAgentRunner', () => {
       },
     }));
 
+    await runner.close();
+
     const call = queryFn.mock.calls[0][0];
     expect(call.options.env['ANTHROPIC_API_KEY']).toBe('sk-grove-test-key');
     expect(call.options.env['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: sk-grove-test-key');
-    expect(call.options.env['ANTHROPIC_BASE_URL']).toBe(groveBaseUrl);
+    expect(call.options.env['ANTHROPIC_BASE_URL']).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 
   test('routes custom Anthropic base URLs through a loopback beta-header filter when beta values are configured to strip', async () => {
@@ -760,7 +762,7 @@ describe('claudeSdkMessageDiagnostic', () => {
 });
 
 describe('ClaudeAgentSdkAgentRunner — request log options', () => {
-  it('passes requestLog to startProxy when profile has base_url and strip values', async () => {
+  it('passes requestLog to startProxy when profile has base_url', async () => {
     const requestLog: RequestLogOptions = { logDir: '/tmp/test-request-logs' };
     const capturedOptions: unknown[] = [];
 
@@ -836,7 +838,6 @@ describe('ClaudeAgentSdkAgentRunner — request log options', () => {
       id: 'test-profile',
       provider: 'anthropic',
       base_url: 'http://127.0.0.1:9999',
-      anthropic_beta_header_filter: { strip: ['some-beta-2025-01-01'] },
     };
 
     try {

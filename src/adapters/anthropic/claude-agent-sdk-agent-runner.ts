@@ -396,8 +396,6 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     const stripBetaValues = profile.anthropic_beta_header_filter?.strip
       .map(value => value.trim())
       .filter(value => value.length > 0) ?? [];
-    if (stripBetaValues.length === 0) return null;
-
     if (!this._betaFilterProxy) {
       const pending = this.startProxy(profile.base_url, {
         stripBetaValues,
