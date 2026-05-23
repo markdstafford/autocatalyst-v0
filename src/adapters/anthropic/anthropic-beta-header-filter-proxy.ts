@@ -138,8 +138,10 @@ async function handleProxyRequest(
   const headers = requestHeaders(req.headers, stripBetaValues);
   const body = await requestBody(req);
 
+  let dumpId: string | undefined;
   if (requestLog) {
-    await dumpRequest(targetUrl, req.method ?? 'GET', headers, body, requestLog, logger);
+    dumpId = generateDumpId();
+    await dumpRequest(targetUrl, req.method ?? 'GET', headers, body, requestLog, logger, dumpId);
   }
 
   const response = await fetch(targetUrl, {
@@ -167,6 +169,13 @@ async function handleProxyRequest(
   });
 }
 
+function generateDumpId(): string {
+  const now = new Date();
+  const ts = now.toISOString().replace(/[:.]/g, '-');
+  const suffix = randomBytes(4).toString('hex');
+  return `${ts}-${suffix}`;
+}
+
 async function dumpRequest(
   targetUrl: URL,
   method: string,
@@ -174,6 +183,7 @@ async function dumpRequest(
   body: ArrayBuffer | undefined,
   requestLog: RequestLogOptions,
   logger: pino.Logger,
+  dumpId: string,
 ): Promise<void> {
   const start = Date.now();
   try {
@@ -195,6 +205,7 @@ async function dumpRequest(
     const now = new Date();
     const record: Record<string, unknown> = {
       timestamp: now.toISOString(),
+      dump_id: dumpId,
       method,
       url: targetUrl.toString(),
       headers: redactedHeaders,
@@ -202,9 +213,7 @@ async function dumpRequest(
     if (parsedBody !== undefined) record['body'] = parsedBody;
     if (bodyRaw !== undefined) record['body_raw'] = bodyRaw;
 
-    const ts = now.toISOString().replace(/[:.]/g, '-');
-    const suffix = randomBytes(4).toString('hex');
-    const filename = `${ts}-${suffix}.json`;
+    const filename = `${dumpId}.request.json`;
     const filePath = join(requestLog.logDir, filename);
     await writeFile(filePath, JSON.stringify(record, null, 2), { mode: 0o600 });
 
