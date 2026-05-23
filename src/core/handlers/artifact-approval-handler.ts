@@ -72,7 +72,7 @@ export class ArtifactApprovalHandler {
 
   private async acknowledgeApproval(feedback: ThreadMessage, policy: ArtifactLifecyclePolicy): Promise<void> {
     try {
-      const next = policy.implementation_required ? ' and starting implementation' : '';
+      const next = policy.implementation_required ? ' and starting planning' : '';
       const ackMsg = policy.sync_issue_on_approval
         ? `Approved \u2014 writing triage to issue${next}.`
         : `Approved \u2014 committing spec${next}.`;

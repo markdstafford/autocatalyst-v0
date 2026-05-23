@@ -23,6 +23,14 @@ describe('registerBuiltInIntents', () => {
       'question',
       'ignore',
     ]);
+    expect(registry.validIntentsForContext('planning')).toEqual([
+      'ignore',
+    ]);
+    expect(registry.validIntentsForContext('awaiting_planning_input')).toEqual([
+      'feedback',
+      'question',
+      'ignore',
+    ]);
   });
 
   it('registers existing_issue context with idea, bug, chore, question, ignore — not file_issues or work_on_issue', () => {

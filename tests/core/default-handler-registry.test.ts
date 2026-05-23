@@ -183,6 +183,34 @@ describe('buildDefaultHandlerRegistry', () => {
     expect(run.stage).toBe('done');
   });
 
+  it('re-enters planning with human context when planning previously needed input', async () => {
+    const deps = makeDeps();
+    const registry = buildDefaultHandlerRegistry(deps);
+    const run = makeRun({ stage: 'awaiting_planning_input' });
+    const feedback = makeFeedback({ content: 'Use the adapter composition path.' });
+    const event: InboundEvent = { type: 'thread_message', payload: feedback };
+
+    const handler = registry.resolve({
+      event_type: 'thread_message',
+      stage: 'awaiting_planning_input',
+      intent: 'feedback',
+    });
+
+    expect(handler).toBeDefined();
+    await handler?.(event, run);
+
+    expect(deps.implementationPlanner.plan).toHaveBeenCalledWith(
+      '/ws/request-001/context-human/specs/typed-feature.md',
+      '/ws/request-001',
+      expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
+      'Use the adapter composition path.',
+    );
+    expect(deps.implementer.implement).toHaveBeenCalled();
+    expect(run.implementation_plan_path).toBe('/ws/request-001/docs/superpowers/plans/implementation-plan.md');
+    expect(run.stage).toBe('reviewing_implementation');
+  });
+
   it('does not mutate or persist pr_open runs when handling non-actionable feedback', async () => {
     const deps = makeDeps();
     const registry = buildDefaultHandlerRegistry(deps);

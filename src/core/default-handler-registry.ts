@@ -136,6 +136,11 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
   });
 
   registerThreadMessage('reviewing_spec', 'feedback', 'ArtifactFeedbackHandler', (feedback, run) => handleArtifactFeedback(deps, branchGuard, feedback, run));
+  registerThreadMessage('awaiting_planning_input', 'feedback', 'PlanningHandler.awaiting', async (feedback, run) => {
+    const planning = await runPlanning(deps, feedback, run, feedback.content);
+    if (planning.status !== 'implementing') return;
+    await runImplementation(deps, branchGuard, feedback, run);
+  });
   registerThreadMessage('reviewing_implementation', 'feedback', 'ImplementationFeedbackHandler.reviewing', (feedback, run) => handleImplementationFeedback(deps, branchGuard, feedback, run, 'reviewing_implementation'));
   registerThreadMessage('awaiting_impl_input', 'feedback', 'ImplementationFeedbackHandler.awaiting', (feedback, run) => handleImplementationFeedback(deps, branchGuard, feedback, run, 'awaiting_impl_input'));
   registerThreadMessage('pr_open', 'feedback', 'PrOpenFeedbackHandler', (feedback, run) => handlePrOpenFeedback(deps, feedback, run));
@@ -150,6 +155,11 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
   registerThreadMessage('reviewing_implementation', 'approval', 'ImplementationApprovalHandler', (feedback, run) => handleImplementationApproval(deps, branchGuard, feedback, run));
   registerThreadMessage('pr_open', 'approval', 'PrMergeHandler', (feedback, run) => handlePrMerge(deps, feedback, run));
   registerThreadMessage('reviewing_spec', 'question', 'QuestionHandler.spec', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'reviewing_spec'));
+  registerThreadMessage('awaiting_planning_input', 'question', 'PlanningHandler.awaitingQuestion', async (feedback, run) => {
+    const planning = await runPlanning(deps, feedback, run, feedback.content);
+    if (planning.status !== 'implementing') return;
+    await runImplementation(deps, branchGuard, feedback, run);
+  });
   registerThreadMessage('reviewing_implementation', 'question', 'QuestionHandler.impl', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'reviewing_implementation'));
   registerThreadMessage('awaiting_impl_input', 'question', 'QuestionHandler.awaiting', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'awaiting_impl_input'));
   registerThreadMessage('pr_open', 'question', 'QuestionHandler.pr', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'pr_open'));
@@ -247,6 +257,7 @@ async function runPlanning(
   deps: DefaultHandlerRegistryDeps,
   feedback: ThreadMessage,
   run: Run,
+  additionalContext?: string,
 ): Promise<Awaited<ReturnType<PlanningHandler['handle']>>> {
   if (!deps.implementationPlanner) {
     await deps.failRun(run, feedback.conversation, new Error('Implementation planner is required for planning'));
@@ -260,7 +271,7 @@ async function runPlanning(
     persist: deps.persist,
     logger: deps.logger,
   });
-  return handler.handle(run, feedback);
+  return handler.handle(run, feedback, additionalContext);
 }
 
 async function handleImplementationFeedback(

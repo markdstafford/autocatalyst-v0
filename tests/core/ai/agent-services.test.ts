@@ -276,6 +276,32 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('implementation planning prompt includes follow-up context when planning is resumed', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-plan-context-'));
+    try {
+      const specPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      const planPath = join(workspace, 'docs', 'superpowers', 'plans', '2026-05-23-feature-test.md');
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', plan_path: planPath }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationPlanningAgent(runner, makePolicy());
+
+      await service.plan(specPath, workspace, undefined, { run_id: 'run-1', request_id: 'req-1' }, 'Limit scope to the adapter path.');
+
+      expect(calls[0].prompt).toContain('Additional planning context from the human:');
+      expect(calls[0].prompt).toContain('Limit scope to the adapter path.');
+      expect(calls[0].prompt).toContain('Use this context to answer the previous planning question before writing the plan.');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('implementation prompt with a plan path skips writing-plans and reads the saved plan', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-existing-plan-'));
     try {

@@ -336,6 +336,7 @@ describe('FileRunStore.load — stale stage demotion', () => {
 describe('FileRunStore.load — stable stages unchanged', () => {
   const stableStages = [
     'reviewing_spec',
+    'awaiting_planning_input',
     'awaiting_impl_input',
     'reviewing_implementation',
     'done',

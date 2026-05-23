@@ -8,6 +8,7 @@ export type RunStage =
   | 'speccing'
   | 'reviewing_spec'
   | 'planning'
+  | 'awaiting_planning_input'
   | 'implementing'
   | 'awaiting_impl_input'
   | 'reviewing_implementation'
@@ -20,6 +21,7 @@ export const VALID_RUN_STAGES: RunStage[] = [
   'speccing',
   'reviewing_spec',
   'planning',
+  'awaiting_planning_input',
   'implementing',
   'awaiting_impl_input',
   'reviewing_implementation',

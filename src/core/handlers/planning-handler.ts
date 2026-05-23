@@ -22,7 +22,7 @@ export type PlanningResult =
 export class PlanningHandler {
   constructor(private readonly deps: PlanningHandlerDeps) {}
 
-  async handle(run: Run, feedback: ThreadMessage): Promise<PlanningResult> {
+  async handle(run: Run, feedback: ThreadMessage, additionalContext?: string): Promise<PlanningResult> {
     const refs = requireArtifactRefs(run);
     if (!refs) {
       await this.deps.failRun(run, feedback.conversation, new Error('Run missing artifact local path or publisher ref for planning'));
@@ -46,6 +46,7 @@ export class PlanningHandler {
         run.workspace_path,
         onProgress,
         { run_id: run.id, request_id: run.request_id },
+        additionalContext,
       );
     } catch (err) {
       this.deps.logger.error({ event: 'planning.failed', run_id: run.id, request_id: run.request_id, error: String(err) }, 'Implementation planning failed');
@@ -60,7 +61,7 @@ export class PlanningHandler {
       } catch (err) {
         this.deps.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post planning question');
       }
-      this.deps.transition(run, 'awaiting_impl_input');
+      this.deps.transition(run, 'awaiting_planning_input');
       return { status: 'needs_input' };
     }
 

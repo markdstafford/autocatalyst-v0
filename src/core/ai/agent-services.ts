@@ -316,9 +316,10 @@ export class AgentRunnerImplementationPlanningAgent implements ImplementationPla
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
     telemetry?: { run_id?: string; request_id?: string },
+    additional_context?: string,
   ): Promise<ImplementationPlanResult> {
     const resultFilePath = join(working_directory, '.autocatalyst', 'implementation-plan-result.json');
-    const prompt = buildImplementationPlanPrompt(artifact_path, working_directory, resultFilePath);
+    const prompt = buildImplementationPlanPrompt(artifact_path, working_directory, resultFilePath, additional_context);
     const route = { task: 'implementation.plan' as const, stage: 'planning' as const };
 
     this.logger.debug(
@@ -1250,15 +1251,31 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
   return lines.join('\n');
 }
 
-function buildImplementationPlanPrompt(artifact_path: string, working_directory: string, result_file_path: string): string {
+function buildImplementationPlanPrompt(
+  artifact_path: string,
+  working_directory: string,
+  result_file_path: string,
+  additional_context?: string,
+): string {
   const planDir = join(working_directory, 'docs', 'superpowers', 'plans');
-  return [
+  const lines = [
     BRANCH_OWNERSHIP_POLICY,
     ``,
     `Read the approved artifact at: ${artifact_path}`,
     ``,
     `Create an implementation plan using the \`superpowers:writing-plans\` skill.`,
     `Use the artifact as the authoritative baseline, especially its task list.`,
+  ];
+  if (additional_context?.trim()) {
+    lines.push(
+      ``,
+      `Additional planning context from the human:`,
+      additional_context.trim(),
+      ``,
+      `Use this context to answer the previous planning question before writing the plan.`,
+    );
+  }
+  lines.push(
     `Save the plan under: ${planDir}`,
     ``,
     `Write the result to: ${result_file_path}`,
@@ -1277,7 +1294,8 @@ function buildImplementationPlanPrompt(artifact_path: string, working_directory:
     `- Do not signal completion until the result file has been written.`,
     ``,
     CHECKPOINT_INSTRUCTIONS,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function buildQuestionPrompt(question: string, resultPath: string): string {

@@ -101,6 +101,21 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
 }
 
 describe('ImplementationStartHandler', () => {
+  it('fails the run when starting initial implementation without a plan path', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ implementation_plan_path: undefined });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(
+      run,
+      TEST_CONVERSATION,
+      expect.objectContaining({ message: 'Run missing implementation plan path for implementation' }),
+    );
+    expect(deps.implementer.implement).not.toHaveBeenCalled();
+  });
+
   it('starts implementation from typed artifact refs when legacy spec fields are absent', async () => {
     const { handler, deps } = makeHandler();
     const run = makeRun({

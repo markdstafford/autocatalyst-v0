@@ -33,6 +33,7 @@ import { extractIssueReference, buildEnrichedClassificationMessage } from './iss
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
   if (stage === 'reviewing_spec') return 'planning';
+  if (stage === 'awaiting_planning_input') return 'planning';
   if (stage === 'reviewing_implementation') return 'implementing';
   if (stage === 'awaiting_impl_input') return 'implementing';
   return stage;
@@ -208,7 +209,7 @@ export class OrchestratorImpl implements Orchestrator {
       this.logger.debug({ event: 'classify.run_not_found', request_id: event.payload.request_id }, 'No run found; discarding');
       return 'discard';
     }
-    const actionableStages: RunStage[] = ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'pr_open'];
+    const actionableStages: RunStage[] = ['reviewing_spec', 'awaiting_planning_input', 'reviewing_implementation', 'awaiting_impl_input', 'pr_open'];
     if (!actionableStages.includes(run.stage)) {
       this.logger.debug({ event: 'classify.stage_blocked', stage: run.stage }, 'Stage blocked: discarding thread_message');
       this.deps.adapter.react?.(event.payload.origin, 'ac-message-discarded').catch((err: unknown) => {

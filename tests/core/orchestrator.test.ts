@@ -1366,7 +1366,6 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     });
     const sc = makeSpecCommitter({ commit: commitFn });
     const orch = makeApprovalOrch({ adapter, specCommitter: sc });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
     await approveSpec(orch, adapter);
     await orch.stop();
@@ -1383,7 +1382,6 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     const commitFn = vi.fn().mockImplementation(async () => { callOrder.push('commit'); });
     const sc = makeSpecCommitter({ commit: commitFn });
     const orch = makeApprovalOrch({ adapter, specCommitter: sc, postMessage });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
     await approveSpec(orch, adapter);
     await orch.stop();
@@ -1399,7 +1397,6 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     const adapter = makeMockAdapter();
     const sc = makeSpecCommitter();
     const orch = makeApprovalOrch({ adapter, specCommitter: sc });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
     await approveSpec(orch, adapter);
     await orch.stop();
@@ -1423,7 +1420,6 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     const sc = makeSpecCommitter({ commit: commitFn });
     const impl = { implement: implementFn };
     const orch = makeApprovalOrch({ adapter, specCommitter: sc, implementer: impl as ImplementationAgent });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
     await approveSpec(orch, adapter);
     await orch.stop();
@@ -1610,7 +1606,6 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
     const sc = makeSpecCommitter({ commit: vi.fn().mockRejectedValue(new Error('commit failed')) });
     const impl = makeImplementationAgent();
     const orch = makeApprovalOrch({ adapter, specCommitter: sc, implementer: impl, postError });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
@@ -1690,7 +1685,6 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
       .mockRejectedValueOnce(new Error('Slack error'))  // approval ack fails
       .mockResolvedValue(undefined);                    // completion message succeeds
     const orch = makeApprovalOrch({ adapter, specCommitter: sc, postMessage });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
@@ -2099,7 +2093,6 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
       createPR: vi.fn().mockImplementation(async () => { callOrder.push('createPR'); return 'https://github.com/org/repo/pull/1'; }),
     });
     const orch = makeApprovalOrch2({ adapter, prManager, specCommitter: sc });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
     await sendImplApproval(orch, adapter);
     await orch.stop();
@@ -2119,7 +2112,6 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
     });
     const prManager = makePRManager();
     const orch = makeApprovalOrch2({ adapter, prManager, specCommitter: sc });
-    implementationPlanner: makeImplementationPlanningAgent(),
     await orch.start();
     await sendImplApproval(orch, adapter);
     await orch.stop();

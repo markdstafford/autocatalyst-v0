@@ -73,6 +73,7 @@ describe('PlanningHandler', () => {
       '/ws/request-001',
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      undefined,
     );
     expect(run.implementation_plan_path).toBe('/ws/request-001/docs/superpowers/plans/implementation-plan.md');
     expect(deps.persist).toHaveBeenCalled();
@@ -90,8 +91,27 @@ describe('PlanningHandler', () => {
 
     expect(result).toEqual({ status: 'needs_input' });
     expect(deps.postMessage).toHaveBeenCalledWith(TEST_CONVERSATION, expect.stringContaining('Which scope?'));
-    expect(run.stage).toBe('awaiting_impl_input');
+    expect(run.stage).toBe('awaiting_planning_input');
     expect(run.implementation_plan_path).toBeUndefined();
+  });
+
+  it('passes human follow-up context when re-running planning', async () => {
+    const planner = {
+      plan: vi.fn().mockResolvedValue({ status: 'complete', plan_path: '/ws/request-001/docs/superpowers/plans/implementation-plan.md' }),
+    };
+    const { handler } = makeHandler({ planner });
+    const run = makeRun({ stage: 'awaiting_planning_input' });
+
+    const result = await handler.handle(run, makeFeedback({ content: 'Use the adapter composition path.' }), 'Use the adapter composition path.');
+
+    expect(result).toEqual({ status: 'implementing', plan_path: '/ws/request-001/docs/superpowers/plans/implementation-plan.md' });
+    expect(planner.plan).toHaveBeenCalledWith(
+      '/ws/request-001/context-human/specs/feature-test.md',
+      '/ws/request-001',
+      expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
+      'Use the adapter composition path.',
+    );
   });
 
   it('fails the run when planning returns malformed complete output', async () => {
@@ -104,6 +124,19 @@ describe('PlanningHandler', () => {
 
     expect(result).toEqual({ status: 'failed' });
     expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, expect.any(Error));
+    expect(run.stage).toBe('planning');
+  });
+
+  it('fails the run when planning agent returns failed status', async () => {
+    const { handler, deps } = makeHandler({
+      planner: { plan: vi.fn().mockResolvedValue({ status: 'failed', error: 'agent timed out' }) },
+    });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, expect.objectContaining({ message: 'agent timed out' }));
     expect(run.stage).toBe('planning');
   });
 });
