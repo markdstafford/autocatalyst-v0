@@ -530,6 +530,14 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
     const profile = this.routingPolicy.resolve(route);
     notifyAgentRequest(telemetry, profile, route);
 
+    const progressWithHeartbeat: ((msg: string) => Promise<void>) | undefined =
+      onProgress && telemetry?.onAgentRequest
+        ? async (msg: string) => {
+            notifyAgentRequest(telemetry, profile, route, true);
+            return onProgress(msg);
+          }
+        : onProgress;
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultPath);
@@ -547,7 +555,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
             ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
           },
         }),
-        onProgress,
+        progressWithHeartbeat,
         this.logger,
         'issue_triage',
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
