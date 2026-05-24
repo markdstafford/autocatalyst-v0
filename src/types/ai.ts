@@ -273,7 +273,7 @@ export interface ImplementationAgent {
 }
 
 export interface QuestionAnsweringAgent {
-  answer(question: string, telemetry?: { run_id?: string; request_id?: string }): Promise<string>;
+  answer(question: string, telemetry?: AgentServiceTelemetry): Promise<string>;
 }
 
 export interface IssueTriageAgent {
@@ -281,7 +281,7 @@ export interface IssueTriageAgent {
     request: Request,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<IssueTriageResult>;
 }
 

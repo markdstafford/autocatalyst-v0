@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
 import type {
+  AgentInvocationMetadata,
   AgentRunner,
   AgentRoutingPolicy,
   ImplementationAgent,
@@ -49,7 +50,7 @@ export interface ReviewRunParams {
   implementation_result: ImplementationResult;
   working_directory: string;
   onProgress?: (message: string) => Promise<void>;
-  onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void;
+  onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
 }
 
 export class ImplementationReviewCoordinator {

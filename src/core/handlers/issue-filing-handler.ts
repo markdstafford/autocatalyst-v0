@@ -5,6 +5,7 @@ import type { ChannelRepoMap } from '../../types/config.js';
 import type { Request } from '../../types/events.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import { channelKey, type ConversationRef } from '../../types/channel.js';
+import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 export interface IssueFilingDeps {
   workspaceManager: Pick<WorkspaceManager, 'create' | 'destroy'>;
@@ -13,6 +14,7 @@ export interface IssueFilingDeps {
   postMessage: (conversation: ConversationRef, text: string) => Promise<void>;
   transition: (run: Run, stage: RunStage) => void;
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
+  persist?: () => void;
   reactToRunMessage?: (run: Run, reaction: string) => Promise<void>;
   reacjiComplete?: string | null;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
@@ -50,9 +52,13 @@ export class IssueFilingHandler {
         );
       });
 
+    const onAgentRequest = this.deps.persist
+      ? makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger)
+      : undefined;
+
     let result: FilingResult;
     try {
-      result = await this.deps.issueFiler.file(request, workspace_path, onProgress, { run_id: run.id, request_id: run.request_id });
+      result = await this.deps.issueFiler.file(request, workspace_path, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest });
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
       await this.deps.failRun(run, request.conversation, err);

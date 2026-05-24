@@ -86,6 +86,7 @@ export class ImplementationFeedbackHandler {
         implementation_result: result,
         working_directory: run.workspace_path,
         onProgress,
+        onAgentRequest,
       });
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');

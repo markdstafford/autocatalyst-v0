@@ -409,12 +409,15 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async answer(question: string, telemetry?: { run_id?: string; request_id?: string }): Promise<string> {
+  async answer(question: string, telemetry?: AgentServiceTelemetry): Promise<string> {
     const resultPath = join(this.repo_path, '.autocatalyst', `question-${randomUUID()}.json`);
     const prompt = buildQuestionPrompt(question, resultPath);
     const route = { task: 'question.answer' as const };
 
     this.logger.debug({ event: 'question.answering', question_length: question.length, ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) }, 'Answering question via agent');
+
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
 
     let drainSummary: AgentDrainSummary | undefined;
     try {
@@ -422,7 +425,7 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
       drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
-          profile: this.routingPolicy.resolve(route),
+          profile,
           working_directory: this.repo_path,
           prompt,
           telemetry: {
@@ -478,7 +481,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
     request: Request,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<IssueTriageResult> {
     const resultPath = join(working_directory, '.autocatalyst', 'enrichment-result.json');
     const prompt = buildIssueTriagePrompt(request, resultPath);
@@ -486,13 +489,16 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
 
     this.logger.debug({ event: 'filing.agent_invoked', request_id: request.id }, 'Invoking agent for issue triage');
 
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultPath);
       drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
-          profile: this.routingPolicy.resolve(route),
+          profile,
           working_directory,
           prompt,
           telemetry: {
@@ -541,7 +547,7 @@ export class IssueFilingService implements IssueFiler {
     request: Request,
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<FilingResult> {
     const triageResult = await this.issueTriageAgent.triage(request, workspace_path, onProgress, telemetry);
     if (triageResult.status === 'failed') {

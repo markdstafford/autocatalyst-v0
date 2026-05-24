@@ -1167,4 +1167,77 @@ describe('AgentServiceTelemetry onAgentRequest callback', () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  test('question.answer calls onAgentRequest before drain completes with resolved model', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'ac-callback-question-'));
+    try {
+      const events: string[] = [];
+      const callbacks: Array<{ model: string; route: { task: string } }> = [];
+
+      const runner = fakeAgentRunner(async request => {
+        events.push('runner');
+        const match = request.prompt.match(/write it to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ answer: 'Yes.' }), 'utf8');
+      });
+
+      const onAgentRequest = vi.fn((metadata: { model: string; route: { task: string } }) => {
+        events.push('callback');
+        callbacks.push(metadata);
+      });
+
+      const service = new AgentRunnerQuestionAnsweringAgent(runner, makePolicy(), repo);
+      await service.answer('Is it working?', { run_id: 'run-001', request_id: 'req-001', onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledOnce();
+      expect(callbacks[0].model).toBe('claude-sonnet-4-5');
+      expect(callbacks[0].route).toMatchObject({ task: 'question.answer' });
+      expect(events.slice(0, 2)).toEqual(['callback', 'runner']);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('issue.triage calls onAgentRequest before drain completes with resolved model', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-callback-triage-'));
+    try {
+      const events: string[] = [];
+      const callbacks: Array<{ model: string; route: { task: string } }> = [];
+
+      const runner = fakeAgentRunner(async request => {
+        events.push('runner');
+        const match = request.prompt.match(/write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', items: [] }), 'utf8');
+      });
+
+      const onAgentRequest = vi.fn((metadata: { model: string; route: { task: string } }) => {
+        events.push('callback');
+        callbacks.push(metadata);
+      });
+
+      const service = new AgentRunnerIssueTriageAgent(runner, makePolicy());
+      const request: Request = {
+        id: 'req-001',
+        channel,
+        conversation,
+        origin,
+        content: 'Bug: login broken',
+        author: 'U123',
+        received_at: new Date().toISOString(),
+      };
+      await service.triage(request, workspace, undefined, { run_id: 'run-001', request_id: 'req-001', onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledOnce();
+      expect(callbacks[0].model).toBe('claude-sonnet-4-5');
+      expect(callbacks[0].route).toMatchObject({ task: 'issue.triage' });
+      expect(events.slice(0, 2)).toEqual(['callback', 'runner']);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });

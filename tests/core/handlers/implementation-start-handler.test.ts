@@ -470,6 +470,26 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     expect(deps.implFeedbackPage?.create).toHaveBeenCalled();
   });
 
+  it('passes onAgentRequest to runInitialReview so review agent updates run metadata', async () => {
+    let capturedOnAgentRequest: ((metadata: { model: string; requested_at: string; route: { task: string } }) => void) | undefined;
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockImplementation(async (params: { onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void }) => {
+        capturedOnAgentRequest = params.onAgentRequest;
+        return { status: 'complete', summary: 'Review ok', testing_instructions: 'npm test' };
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(capturedOnAgentRequest).toBeDefined();
+    capturedOnAgentRequest?.({ model: 'claude-opus-4-7', requested_at: '2026-01-02T00:00:00.000Z', route: { task: 'implementation.review.initial' } });
+    expect(run.current_model).toBe('claude-opus-4-7');
+    expect(run.last_agent_request_at).toBe('2026-01-02T00:00:00.000Z');
+    expect(deps.persist).toHaveBeenCalled();
+  });
+
   it('posts a labeled testing-guide link when PublishedImplementationReview includes label and url', async () => {
     const { handler, deps } = makeHandler({
       implFeedbackPage: {

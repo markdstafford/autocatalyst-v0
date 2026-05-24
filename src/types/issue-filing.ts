@@ -1,4 +1,5 @@
 import type { Request } from './events.js';
+import type { AgentServiceTelemetry } from './ai.js';
 
 export interface FiledIssue {
   number: number;
@@ -18,6 +19,6 @@ export interface IssueFiler {
     request: Request,
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<FilingResult>;
 }
