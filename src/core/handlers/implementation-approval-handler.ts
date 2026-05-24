@@ -87,6 +87,8 @@ export class ImplementationApprovalHandler {
         status: 'complete',
         summary: run.last_impl_result?.summary,
         testing_instructions: run.last_impl_result?.testing_instructions,
+        review_summary: run.last_impl_result?.review_summary,
+        testing_steps: run.last_impl_result?.testing_steps,
       };
       const reviewedResult = await this.deps.reviewCoordinator.runFinalReview({
         run,
@@ -133,10 +135,21 @@ export class ImplementationApprovalHandler {
       }
 
       // Update last_impl_result with reviewed result
-      if (reviewedResult.summary !== undefined || reviewedResult.testing_instructions !== undefined) {
+      if (
+        reviewedResult.summary !== undefined
+        || reviewedResult.testing_instructions !== undefined
+        || reviewedResult.review_summary !== undefined
+        || reviewedResult.testing_steps !== undefined
+      ) {
         run.last_impl_result = {
           summary: reviewedResult.summary ?? run.last_impl_result?.summary ?? '',
           testing_instructions: reviewedResult.testing_instructions ?? run.last_impl_result?.testing_instructions ?? '',
+          ...(reviewedResult.review_summary ?? run.last_impl_result?.review_summary
+            ? { review_summary: reviewedResult.review_summary ?? run.last_impl_result?.review_summary }
+            : {}),
+          ...(reviewedResult.testing_steps ?? run.last_impl_result?.testing_steps
+            ? { testing_steps: reviewedResult.testing_steps ?? run.last_impl_result?.testing_steps }
+            : {}),
         };
         this.deps.persist();
       }
