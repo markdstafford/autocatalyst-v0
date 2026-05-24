@@ -49,6 +49,7 @@ export interface ReviewRunParams {
   implementation_result: ImplementationResult;
   working_directory: string;
   onProgress?: (message: string) => Promise<void>;
+  onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void;
 }
 
 export class ImplementationReviewCoordinator {
@@ -69,7 +70,7 @@ export class ImplementationReviewCoordinator {
   private async runReview(
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
-    { run, artifact_path, implementation_result, working_directory, onProgress }: ReviewRunParams,
+    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest }: ReviewRunParams,
   ): Promise<ImplementationResult> {
     // Resolve review profile — fall back to initial when final is absent
     let reviewProfile = this.deps.routingPolicy.resolveOptional({ task: routeTask });
@@ -125,6 +126,13 @@ export class ImplementationReviewCoordinator {
     let reviewResultContent: string;
     let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
     try {
+      if (onAgentRequest && reviewProfile) {
+        onAgentRequest({
+          model: reviewProfile.model?.trim() || 'unknown',
+          requested_at: new Date().toISOString(),
+          route: { task: routeTask },
+        });
+      }
       await drainAgentRunner(
         this.deps.runner.run({
           route: { task: routeTask },
@@ -233,7 +241,7 @@ export class ImplementationReviewCoordinator {
         working_directory,
         responsePrompt,
         progressFn,
-        { run_id: run.id },
+        { run_id: run.id, onAgentRequest },
       );
     } catch (err) {
       return { status: 'failed', error: `Implementer response to review failed: ${String(err)}` };

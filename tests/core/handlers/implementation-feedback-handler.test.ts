@@ -123,7 +123,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001',
       expect.any(String),     // additionalContext
       expect.any(Function),   // onProgress
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
     );
     expect(deps.failRun).not.toHaveBeenCalled();
   });
@@ -150,7 +150,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001',
       expect.stringContaining('Fix the bug'),
       expect.any(Function),   // onProgress
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
     );
     const context = (deps.implementer.implement as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
     expect(context).toContain('Some context');
@@ -182,7 +182,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001',
       'use adapter composition',
       expect.any(Function),   // onProgress
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
     );
   });
 
@@ -302,6 +302,25 @@ describe('ImplementationFeedbackHandler', () => {
     expect(context).toBe('please check the edge case');
     expect(deps.logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'implementation.feedback_empty', run_id: 'run-001' }),
+      expect.any(String),
+    );
+  });
+
+  it('onAgentRequest callback updates run fields and persists', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    const implementCall = (deps.implementer.implement as ReturnType<typeof vi.fn>).mock.calls[0];
+    const telemetry = implementCall[4] as { onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void };
+    telemetry.onAgentRequest?.({ model: 'claude-opus-4-5', requested_at: '2026-01-01T00:00:00.000Z', route: { task: 'some.task' } });
+
+    expect(run.current_model).toBe('claude-opus-4-5');
+    expect(run.last_agent_request_at).toBe('2026-01-01T00:00:00.000Z');
+    expect(deps.persist).toHaveBeenCalled();
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'run.agent_request_recorded', run_id: 'run-001' }),
       expect.any(String),
     );
   });

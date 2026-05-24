@@ -9,6 +9,7 @@ import type { ChannelRepoMap } from '../../types/config.js';
 import type { WorkspaceManager } from '../workspace-manager.js';
 import { channelKey, type ConversationRef } from '../../types/channel.js';
 import type { BranchGuard } from '../git-branch-guard.js';
+import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 type ArtifactCreationIntent = Extract<RequestIntent, 'idea' | 'bug' | 'chore'>;
 
@@ -59,11 +60,13 @@ export class ArtifactCreationHandler {
         );
       });
 
+    const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
+
     let local_path: string;
     try {
       const result = intent === 'idea'
-        ? await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, undefined, { run_id: run.id, request_id: run.request_id })
-        : await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, intent, { run_id: run.id, request_id: run.request_id });
+        ? await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, undefined, { run_id: run.id, request_id: run.request_id, onAgentRequest })
+        : await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, intent, { run_id: run.id, request_id: run.request_id, onAgentRequest });
       local_path = result.artifact_path;
       this.setArtifactDraft(run, artifactKindForIntent(intent)!, local_path);
       if (intent !== 'idea' && result.existing_issue !== undefined) {

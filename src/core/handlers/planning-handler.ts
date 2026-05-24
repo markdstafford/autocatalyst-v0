@@ -5,6 +5,7 @@ import type { ConversationRef } from '../../types/channel.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import { requireArtifactRefs } from '../run-refs.js';
 import { validateImplementationPlanPath } from '../plan-path-validator.js';
+import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 export interface PlanningHandlerDeps {
   planner: Pick<ImplementationPlanningAgent, 'plan'>;
@@ -41,13 +42,15 @@ export class PlanningHandler {
 
     this.deps.logger.info({ event: 'planning.started', run_id: run.id, request_id: run.request_id }, 'Implementation planning started');
 
+    const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
+
     let result;
     try {
       result = await this.deps.planner.plan(
         refs.local_path,
         run.workspace_path,
         onProgress,
-        { run_id: run.id, request_id: run.request_id },
+        { run_id: run.id, request_id: run.request_id, onAgentRequest },
         additionalContext,
       );
     } catch (err) {

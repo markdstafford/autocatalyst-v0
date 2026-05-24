@@ -83,7 +83,7 @@ describe('ArtifactCreationHandler', () => {
     await handler.handle(run, request, 'idea');
 
     expect(deps.workspaceManager.create).toHaveBeenCalledWith('request-001', 'https://example.test/org/repo.git', '/tmp/workspaces');
-    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), undefined, { run_id: 'run-001', request_id: 'request-001' });
+    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), undefined, expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }));
     expect(deps.artifactPublisher.createArtifact).toHaveBeenCalledWith(
       TEST_CONVERSATION,
       expect.objectContaining({
@@ -116,7 +116,7 @@ describe('ArtifactCreationHandler', () => {
 
     await handler.handle(run, request, 'bug');
 
-    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug', { run_id: 'run-001', request_id: 'request-001' });
+    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug', expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }));
     expect(run.issue).toBe(42);
     expect(run.artifact).toMatchObject({
       kind: 'bug_triage',
@@ -209,6 +209,26 @@ describe('ArtifactCreationHandler', () => {
     expect(deps.postMessage).toHaveBeenCalledWith(
       TEST_CONVERSATION,
       'Artifact ready for review: https://artifact.example.test/CANVAS001',
+    );
+  });
+
+  it('onAgentRequest callback updates run fields and persists', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ intent: 'idea' });
+    const request = makeRequest();
+
+    await handler.handle(run, request, 'idea');
+
+    const createCall = (deps.artifactAuthoringAgent.create as ReturnType<typeof vi.fn>).mock.calls[0];
+    const telemetry = createCall[4] as { onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void };
+    telemetry.onAgentRequest?.({ model: 'claude-opus-4-5', requested_at: '2026-01-01T00:00:00.000Z', route: { task: 'some.task' } });
+
+    expect(run.current_model).toBe('claude-opus-4-5');
+    expect(run.last_agent_request_at).toBe('2026-01-01T00:00:00.000Z');
+    expect(deps.persist).toHaveBeenCalled();
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'run.agent_request_recorded', run_id: 'run-001' }),
+      expect.any(String),
     );
   });
 

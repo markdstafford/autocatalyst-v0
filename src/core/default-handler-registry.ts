@@ -227,6 +227,7 @@ async function handleArtifactFeedback(
     postMessage: deps.postMessage,
     transition: deps.transition,
     failRun: deps.failRun,
+    persist: deps.persist,
     logger: deps.logger,
     branchGuard,
   });

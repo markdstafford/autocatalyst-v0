@@ -7,6 +7,7 @@ import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { requireArtifactRefs } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
+import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 export interface ArtifactFeedbackDeps {
   artifactAuthoringAgent: Pick<ArtifactAuthoringAgent, 'revise'>;
@@ -16,7 +17,8 @@ export interface ArtifactFeedbackDeps {
   postMessage: (conversation: ConversationRef, text: string) => Promise<void>;
   transition: (run: Run, stage: RunStage) => void;
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
-  logger: Pick<pino.Logger, 'debug' | 'warn' | 'error'>;
+  persist: () => void;
+  logger: Pick<pino.Logger, 'debug' | 'warn' | 'error' | 'info'>;
   branchGuard?: BranchGuard;
 }
 
@@ -62,9 +64,11 @@ export class ArtifactFeedbackHandler {
         );
       });
 
+    const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
+
     let result;
     try {
-      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id });
+      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest });
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };

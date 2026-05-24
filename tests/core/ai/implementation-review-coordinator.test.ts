@@ -287,6 +287,34 @@ describe('ImplementationReviewCoordinator', () => {
     });
   });
 
+  describe('onAgentRequest callback', () => {
+    it('calls onAgentRequest with model, requested_at, and route when review profile is resolved', async () => {
+      const deps = makeDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const onAgentRequest = vi.fn();
+
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledWith(expect.objectContaining({
+        model: expect.any(String),
+        requested_at: expect.any(String),
+        route: expect.objectContaining({ task: 'implementation.review.initial' }),
+      }));
+    });
+
+    it('does not call onAgentRequest when no review profile is configured', async () => {
+      const deps = makeDeps({} as never, { routingPolicy: makeRoutingPolicy(null, null) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const onAgentRequest = vi.fn();
+
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onAgentRequest });
+
+      expect(onAgentRequest).not.toHaveBeenCalled();
+    });
+  });
+
   describe('review round telemetry', () => {
     it('logs implementation.review.round_started and round_completed', async () => {
       const deps = makeDeps();

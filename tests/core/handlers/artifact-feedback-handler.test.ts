@@ -65,8 +65,10 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactFee
     postMessage: vi.fn().mockResolvedValue(undefined),
     transition: vi.fn((run: Run, stage: Run['stage']) => { run.stage = stage; }),
     failRun: vi.fn().mockResolvedValue(undefined),
+    persist: vi.fn(),
     logger: {
       debug: vi.fn(),
+      info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     },
@@ -102,7 +104,7 @@ describe('ArtifactFeedbackHandler', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS-TYPED',
@@ -159,7 +161,7 @@ describe('ArtifactFeedbackHandler', () => {
       '/ws/request-001',
       '# Current\n\n<span discussion-urls="discussion://disc-1">text</span>',
       expect.any(Function),
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS001',
@@ -197,7 +199,7 @@ describe('ArtifactFeedbackHandler', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
     );
     expect(deps.failRun).not.toHaveBeenCalled();
     expect(run.stage).toBe('reviewing_spec');
@@ -253,6 +255,26 @@ describe('ArtifactFeedbackHandler', () => {
     expect(result).toEqual({ status: 'failed' });
     expect(deps.failRun).toHaveBeenCalledWith(run, expect.anything(), branchDriftError);
     expect(deps.artifactPublisher.updateArtifact).not.toHaveBeenCalled();
+  });
+
+  it('onAgentRequest callback updates run fields and persists', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun();
+    const feedback = makeFeedback();
+
+    await handler.handle(run, feedback);
+
+    const reviseCall = (deps.artifactAuthoringAgent.revise as ReturnType<typeof vi.fn>).mock.calls[0];
+    const telemetry = reviseCall[6] as { onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void };
+    telemetry.onAgentRequest?.({ model: 'claude-opus-4-5', requested_at: '2026-01-01T00:00:00.000Z', route: { task: 'some.task' } });
+
+    expect(run.current_model).toBe('claude-opus-4-5');
+    expect(run.last_agent_request_at).toBe('2026-01-01T00:00:00.000Z');
+    expect(deps.persist).toHaveBeenCalled();
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'run.agent_request_recorded', run_id: 'run-001' }),
+      expect.any(String),
+    );
   });
 
   it('does not fail the run when replying to a publisher comment or notifying the channel fails', async () => {

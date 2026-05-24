@@ -12,6 +12,7 @@ import { getArtifactLifecyclePolicy } from '../../types/artifact.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import type { ImplementationResult } from '../../types/ai.js';
+import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 export interface ImplementationApprovalDeps {
   specCommitter?: Pick<SpecCommitter, 'updateStatus'>;
@@ -83,6 +84,7 @@ export class ImplementationApprovalHandler {
 
     // Run final review before PR creation
     if (this.deps.reviewCoordinator) {
+      const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
       const currentResult: ImplementationResult = {
         status: 'complete',
         summary: run.last_impl_result?.summary,
@@ -95,6 +97,7 @@ export class ImplementationApprovalHandler {
         artifact_path: localPath ?? '',
         implementation_result: currentResult,
         working_directory: run.workspace_path,
+        onAgentRequest,
       });
 
       if (reviewedResult.status === 'needs_input') {
