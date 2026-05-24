@@ -191,6 +191,11 @@ describe('ImplementationStartHandler', () => {
     expect(run.last_impl_result).toEqual({
       summary: 'Implemented the feature successfully.',
       testing_instructions: 'npm test',
+      review_summary: {
+        changes: ['Added feature X', 'Wired config loader'],
+        confirm: ['Feature X works', 'Config loads correctly'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm install', 'npm test'],
     });
     expect(run.stage).toBe('reviewing_implementation');
   });
@@ -385,6 +390,35 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith(
       expect.objectContaining({ review_exchanges: [exchange] }),
     );
+  });
+
+  it('stores structured fields from the reviewed implementation result', async () => {
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockResolvedValue({
+        status: 'complete',
+        summary: 'Reviewed summary.',
+        testing_instructions: 'Reviewed legacy instructions.',
+        review_summary: {
+          changes: ['Kept generated PR data', 'Stored review checklist'],
+          confirm: ['PR body has summary bullets', 'PR body has verification checklist'],
+        },
+        testing_steps: ['cd /ws/request-001', 'npm test -- pr-manager'],
+      }),
+    };
+    const { handler } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(run.last_impl_result).toEqual({
+      summary: 'Reviewed summary.',
+      testing_instructions: 'Reviewed legacy instructions.',
+      review_summary: {
+        changes: ['Kept generated PR data', 'Stored review checklist'],
+        confirm: ['PR body has summary bullets', 'PR body has verification checklist'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm test -- pr-manager'],
+    });
   });
 
   it('transitions to awaiting_impl_input when coordinator returns needs_input', async () => {
