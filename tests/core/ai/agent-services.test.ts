@@ -1240,4 +1240,71 @@ describe('AgentServiceTelemetry onAgentRequest callback', () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  test('relay progress events trigger heartbeat callbacks with is_heartbeat: true', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-heartbeat-'));
+    try {
+      const callbacks: Array<{ model: string; is_heartbeat?: boolean }> = [];
+
+      const runnerWithRelays: AgentRunner = {
+        async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+          const match = request.prompt.match(/write the result to:\s*(.+)/i);
+          const resultPath = match?.[1]?.trim();
+          if (!resultPath) throw new Error('result path not found');
+          await mkdir(dirname(resultPath), { recursive: true });
+          await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-test.md') }), 'utf8');
+          yield { type: 'assistant', content: [{ type: 'text', text: '[Relay] step one' }] };
+          yield { type: 'assistant', content: [{ type: 'text', text: '[Relay] step two' }] };
+        },
+      };
+
+      const onAgentRequest = vi.fn((metadata: { model: string; is_heartbeat?: boolean }) => {
+        callbacks.push(metadata);
+      });
+      const onProgress = vi.fn();
+      const service = new AgentRunnerArtifactAuthoringAgent(runnerWithRelays, makePolicy());
+      await service.create(makeRequest(), workspace, onProgress, 'idea', { onAgentRequest });
+
+      // Initial call + one heartbeat per relay message
+      expect(callbacks).toHaveLength(3);
+      expect(callbacks[0].is_heartbeat).toBeFalsy();
+      expect(callbacks[1].is_heartbeat).toBe(true);
+      expect(callbacks[2].is_heartbeat).toBe(true);
+      expect(callbacks[1].model).toBe('claude-sonnet-4-5');
+      expect(onProgress).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('no heartbeat callbacks when onProgress is absent', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-no-heartbeat-'));
+    try {
+      const callbacks: Array<{ model: string; is_heartbeat?: boolean }> = [];
+
+      const runnerWithRelays: AgentRunner = {
+        async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+          const match = request.prompt.match(/write the result to:\s*(.+)/i);
+          const resultPath = match?.[1]?.trim();
+          if (!resultPath) throw new Error('result path not found');
+          await mkdir(dirname(resultPath), { recursive: true });
+          await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-test.md') }), 'utf8');
+          yield { type: 'assistant', content: [{ type: 'text', text: '[Relay] step one' }] };
+        },
+      };
+
+      const onAgentRequest = vi.fn((metadata: { model: string; is_heartbeat?: boolean }) => {
+        callbacks.push(metadata);
+      });
+      // No onProgress — heartbeat wrapper should not be installed
+      const service = new AgentRunnerArtifactAuthoringAgent(runnerWithRelays, makePolicy());
+      await service.create(makeRequest(), workspace, undefined, 'idea', { onAgentRequest });
+
+      // Only the initial call, no heartbeat
+      expect(callbacks).toHaveLength(1);
+      expect(callbacks[0].is_heartbeat).toBeFalsy();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });

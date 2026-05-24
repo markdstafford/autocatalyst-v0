@@ -33,12 +33,12 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 
 describe('run AI context helpers', () => {
   it('defines the approved AI-active stage set', () => {
-    expect([...AI_ACTIVE_STAGES]).toEqual(['speccing', 'planning', 'implementing']);
+    expect([...AI_ACTIVE_STAGES]).toEqual(['speccing', 'reviewing_spec', 'planning', 'implementing', 'reviewing_implementation']);
     expect(isAiActiveStage('speccing')).toBe(true);
+    expect(isAiActiveStage('reviewing_spec')).toBe(true);
     expect(isAiActiveStage('planning')).toBe(true);
     expect(isAiActiveStage('implementing')).toBe(true);
-    expect(isAiActiveStage('reviewing_spec')).toBe(false);
-    expect(isAiActiveStage('reviewing_implementation')).toBe(false);
+    expect(isAiActiveStage('reviewing_implementation')).toBe(true);
     expect(isAiActiveStage('awaiting_planning_input')).toBe(false);
     expect(isAiActiveStage('awaiting_impl_input')).toBe(false);
     expect(isAiActiveStage('pr_open')).toBe(false);
@@ -97,6 +97,25 @@ describe('run AI context helpers', () => {
       },
       'Agent request metadata recorded',
     );
+  });
+
+  it('recorder does not log for heartbeat calls but still mutates and persists', () => {
+    const run = makeRun();
+    const persist = vi.fn();
+    const logger = { info: vi.fn() };
+    const recorder = makeRunAgentRequestRecorder(run, persist, logger);
+
+    recorder({
+      model: 'claude-sonnet-4-5',
+      requested_at: '2026-05-24T01:05:00.000Z',
+      route: { task: 'implementation.run' },
+      is_heartbeat: true,
+    });
+
+    expect(run.current_model).toBe('claude-sonnet-4-5');
+    expect(run.last_agent_request_at).toBe('2026-05-24T01:05:00.000Z');
+    expect(persist).toHaveBeenCalledOnce();
+    expect(logger.info).not.toHaveBeenCalled();
   });
 
   it('recorder uses unknown for blank model', () => {
