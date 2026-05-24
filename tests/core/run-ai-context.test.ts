@@ -33,12 +33,12 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 
 describe('run AI context helpers', () => {
   it('defines the approved AI-active stage set', () => {
-    expect([...AI_ACTIVE_STAGES]).toEqual(['speccing', 'reviewing_spec', 'planning', 'implementing', 'reviewing_implementation']);
+    expect([...AI_ACTIVE_STAGES]).toEqual(['speccing', 'planning', 'implementing']);
     expect(isAiActiveStage('speccing')).toBe(true);
-    expect(isAiActiveStage('reviewing_spec')).toBe(true);
     expect(isAiActiveStage('planning')).toBe(true);
     expect(isAiActiveStage('implementing')).toBe(true);
-    expect(isAiActiveStage('reviewing_implementation')).toBe(true);
+    expect(isAiActiveStage('reviewing_spec')).toBe(false);
+    expect(isAiActiveStage('reviewing_implementation')).toBe(false);
     expect(isAiActiveStage('awaiting_planning_input')).toBe(false);
     expect(isAiActiveStage('awaiting_impl_input')).toBe(false);
     expect(isAiActiveStage('pr_open')).toBe(false);

@@ -97,7 +97,7 @@ describe('QuestionHandler', () => {
         }),
       },
     });
-    const run = makeRun({ stage: 'reviewing_spec' });
+    const run = makeRun({ stage: 'speccing' });
 
     await handler.handle('What changed?', TEST_CONVERSATION, run);
 

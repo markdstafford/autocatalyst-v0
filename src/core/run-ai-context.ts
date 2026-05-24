@@ -4,10 +4,8 @@ import type { Run, RunStage } from '../types/runs.js';
 
 export const AI_ACTIVE_STAGES: ReadonlySet<RunStage> = new Set([
   'speccing',
-  'reviewing_spec',
   'planning',
   'implementing',
-  'reviewing_implementation',
 ]);
 
 export function isAiActiveStage(stage: RunStage): boolean {
