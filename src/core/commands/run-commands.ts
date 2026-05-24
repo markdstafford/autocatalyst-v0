@@ -1,5 +1,6 @@
 import type { CommandHandler } from '../../types/commands.js';
 import type { Run } from '../../types/runs.js';
+import { isAiActiveStage } from '../run-ai-context.js';
 
 function findRun(runs: Map<string, Run>, requestId: string | undefined, idArg: string | undefined): Run | undefined {
   if (requestId) {
@@ -24,6 +25,16 @@ function formatTimeSince(isoDate: string): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
+function formatWorkspacePath(workspacePath: string): string {
+  const trimmed = workspacePath.trim();
+  return trimmed ? `\`${trimmed}\`` : 'not yet allocated';
+}
+
+function formatLastRequest(isoDate: string | undefined): string {
+  if (!isoDate) return 'not yet requested';
+  return `${formatTimeSince(isoDate)} ago`;
+}
+
 export function makeRunStatusHandler(runs: Map<string, Run>): CommandHandler {
   return async (event, reply) => {
     const requestId = event.inferred_context?.request_id;
@@ -42,9 +53,21 @@ export function makeRunStatusHandler(runs: Map<string, Run>): CommandHandler {
 
     const timeInStage = formatTimeSince(run.updated_at);
     const stageSuffix = run.stage === 'done' ? ' ✓ (complete)' : run.stage === 'failed' ? ' ✗ (failed)' : '';
-    await reply(
-      `*Run:* \`${run.id}\`\n*Stage:* \`${run.stage}\`${stageSuffix}\n*Intent:* \`${run.intent}\`\n*Time in stage:* ${timeInStage}`,
-    );
+
+    const lines = [
+      `*Run:* \`${run.id}\``,
+      `*Workspace:* ${formatWorkspacePath(run.workspace_path)}`,
+      `*Intent:* \`${run.intent}\``,
+      `*Stage:* \`${run.stage}\`${stageSuffix}`,
+      `*Time in stage:* ${timeInStage}`,
+    ];
+
+    if (isAiActiveStage(run.stage)) {
+      lines.push(`*Model:* ${run.current_model ? `\`${run.current_model}\`` : 'not yet requested'}`);
+      lines.push(`*Last request:* ${formatLastRequest(run.last_agent_request_at)}`);
+    }
+
+    await reply(lines.join('\n'));
   };
 }
 
