@@ -73,6 +73,11 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
         status: 'complete',
         summary: 'Fixed it',
         testing_instructions: 'npm test',
+        review_summary: {
+          changes: ['Resolved feedback item', 'Updated regression coverage'],
+          confirm: ['Feedback no longer reproduces', 'Regression test passes'],
+        },
+        testing_steps: ['cd /ws/request-001', 'npm test'],
       }),
     },
     implFeedbackPage: {
@@ -151,7 +156,15 @@ describe('ImplementationFeedbackHandler', () => {
     expect(context).toContain('Some context');
     expect(context).not.toContain('Already done');
     expect(run.attempt).toBe(1);
-    expect(run.last_impl_result).toEqual({ summary: 'Fixed it', testing_instructions: 'npm test' });
+    expect(run.last_impl_result).toEqual({
+      summary: 'Fixed it',
+      testing_instructions: 'npm test',
+      review_summary: {
+        changes: ['Resolved feedback item', 'Updated regression coverage'],
+        confirm: ['Feedback no longer reproduces', 'Regression test passes'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm test'],
+    });
     expect(run.stage).toBe('reviewing_implementation');
   });
 
@@ -472,6 +485,35 @@ describe('ImplementationFeedbackHandler with reviewCoordinator', () => {
       'page-id',
       expect.objectContaining({ review_exchanges: [exchange] }),
     );
+  });
+
+  it('stores structured fields from the reviewed feedback implementation result', async () => {
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockResolvedValue({
+        status: 'complete',
+        summary: 'Reviewed feedback pass.',
+        testing_instructions: 'Reviewed feedback tests.',
+        review_summary: {
+          changes: ['Updated persisted result', 'Kept feedback checklist'],
+          confirm: ['PR options contain changes', 'PR options contain test steps'],
+        },
+        testing_steps: ['cd /ws/request-001', 'npm test -- implementation-feedback-handler'],
+      }),
+    };
+    const { handler } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun({ impl_feedback_ref: 'page-id' });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(run.last_impl_result).toEqual({
+      summary: 'Reviewed feedback pass.',
+      testing_instructions: 'Reviewed feedback tests.',
+      review_summary: {
+        changes: ['Updated persisted result', 'Kept feedback checklist'],
+        confirm: ['PR options contain changes', 'PR options contain test steps'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm test -- implementation-feedback-handler'],
+    });
   });
 
   it('proceeds normally without coordinator when not configured', async () => {

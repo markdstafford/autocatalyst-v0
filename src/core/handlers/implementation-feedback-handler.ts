@@ -135,6 +135,8 @@ export class ImplementationFeedbackHandler {
     run.last_impl_result = {
       summary: reviewedResult.summary ?? '',
       testing_instructions: reviewedResult.testing_instructions ?? '',
+      ...(reviewedResult.review_summary ? { review_summary: reviewedResult.review_summary } : {}),
+      ...(reviewedResult.testing_steps ? { testing_steps: reviewedResult.testing_steps } : {}),
     };
     this.deps.persist();
 
