@@ -134,6 +134,20 @@ export class ImplementationReviewCoordinator {
           route: { task: routeTask },
         });
       }
+
+      const progressWithHeartbeat: typeof onProgress =
+        onProgress && onAgentRequest && reviewProfile
+          ? async (msg: string) => {
+              onAgentRequest({
+                model: reviewProfile.model?.trim() || 'unknown',
+                requested_at: new Date().toISOString(),
+                route: { task: routeTask },
+                is_heartbeat: true,
+              });
+              return onProgress(msg);
+            }
+          : onProgress;
+
       await drainAgentRunner(
         this.deps.runner.run({
           route: { task: routeTask },
@@ -148,7 +162,7 @@ export class ImplementationReviewCoordinator {
             handler: 'ImplementationReviewCoordinator',
           },
         }),
-        onProgress,
+        progressWithHeartbeat,
         this.deps.logger,
         `implementation_review_${phase}`,
         { run_id: run.id, request_id: run.request_id },

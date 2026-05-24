@@ -31,17 +31,19 @@ export function makeRunAgentRequestRecorder(
     run.current_model = metadata.model?.trim() || 'unknown';
     run.last_agent_request_at = metadata.requested_at;
     persist();
-    logger.info(
-      {
-        event: 'run.agent_request_recorded',
-        run_id: run.id,
-        request_id: run.request_id,
-        model: run.current_model,
-        route_task: metadata.route.task,
-        ...(metadata.route.stage ? { route_stage: metadata.route.stage } : {}),
-        ...(metadata.route.intent ? { route_intent: metadata.route.intent } : {}),
-      },
-      'Agent request metadata recorded',
-    );
+    if (!metadata.is_heartbeat) {
+      logger.info(
+        {
+          event: 'run.agent_request_recorded',
+          run_id: run.id,
+          request_id: run.request_id,
+          model: run.current_model,
+          route_task: metadata.route.task,
+          ...(metadata.route.stage ? { route_stage: metadata.route.stage } : {}),
+          ...(metadata.route.intent ? { route_intent: metadata.route.intent } : {}),
+        },
+        'Agent request metadata recorded',
+      );
+    }
   };
 }

@@ -41,11 +41,17 @@ import type { ArtifactCommentAnchorCodec } from '../../types/publisher.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
-function notifyAgentRequest(telemetry: AgentServiceTelemetry | undefined, profile: AgentProfile, route: AgentRoute): void {
+function notifyAgentRequest(
+  telemetry: AgentServiceTelemetry | undefined,
+  profile: AgentProfile,
+  route: AgentRoute,
+  is_heartbeat = false,
+): void {
   telemetry?.onAgentRequest?.({
     model: profile.model?.trim() || 'unknown',
     requested_at: new Date().toISOString(),
     route,
+    is_heartbeat,
   } satisfies AgentInvocationMetadata);
 }
 
@@ -95,6 +101,14 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     const profile = this.routingPolicy.resolve(route);
     notifyAgentRequest(telemetry, profile, route);
 
+    const progressWithHeartbeat: ((msg: string) => Promise<void>) | undefined =
+      onProgress && telemetry?.onAgentRequest
+        ? async (msg: string) => {
+            notifyAgentRequest(telemetry, profile, route, true);
+            return onProgress(msg);
+          }
+        : onProgress;
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(createResultPath);
@@ -112,7 +126,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
             ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
           },
         }),
-        onProgress,
+        progressWithHeartbeat,
         this.logger,
         'artifact_generation',
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
@@ -181,6 +195,14 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     const profile = this.routingPolicy.resolve(route);
     notifyAgentRequest(telemetry, profile, route);
 
+    const progressWithHeartbeat: ((msg: string) => Promise<void>) | undefined =
+      onProgress && telemetry?.onAgentRequest
+        ? async (msg: string) => {
+            notifyAgentRequest(telemetry, profile, route, true);
+            return onProgress(msg);
+          }
+        : onProgress;
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(reviseResultPath);
@@ -198,7 +220,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
             ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
           },
         }),
-        onProgress,
+        progressWithHeartbeat,
         this.logger,
         'artifact_generation',
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
@@ -268,6 +290,14 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     const profile = this.routingPolicy.resolve(route);
     notifyAgentRequest(telemetry, profile, route);
 
+    const progressWithHeartbeat: ((msg: string) => Promise<void>) | undefined =
+      onProgress && telemetry?.onAgentRequest
+        ? async (msg: string) => {
+            notifyAgentRequest(telemetry, profile, route, true);
+            return onProgress(msg);
+          }
+        : onProgress;
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultFilePath);
@@ -285,7 +315,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
             ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
           },
         }),
-        onProgress,
+        progressWithHeartbeat,
         this.logger,
         'implementation',
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
@@ -351,6 +381,14 @@ export class AgentRunnerImplementationPlanningAgent implements ImplementationPla
     const profile = this.routingPolicy.resolve(route);
     notifyAgentRequest(telemetry, profile, route);
 
+    const progressWithHeartbeat: ((msg: string) => Promise<void>) | undefined =
+      onProgress && telemetry?.onAgentRequest
+        ? async (msg: string) => {
+            notifyAgentRequest(telemetry, profile, route, true);
+            return onProgress(msg);
+          }
+        : onProgress;
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultFilePath);
@@ -368,7 +406,7 @@ export class AgentRunnerImplementationPlanningAgent implements ImplementationPla
             ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
           },
         }),
-        onProgress,
+        progressWithHeartbeat,
         this.logger,
         'planning',
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },

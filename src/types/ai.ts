@@ -27,6 +27,7 @@ export interface AgentInvocationMetadata {
   model: string;
   requested_at: string;
   route: AgentRoute;
+  is_heartbeat?: boolean;
 }
 
 export interface AgentServiceTelemetry {
