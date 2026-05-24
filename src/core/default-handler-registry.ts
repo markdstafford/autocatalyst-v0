@@ -95,6 +95,7 @@ export interface DefaultHandlerRegistryDeps {
   logger: Pick<pino.Logger, 'debug' | 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
   reviewCoordinator?: ImplementationReviewCoordinator;
+  validatePlanPath?: (workspacePath: string, planPath: string) => string;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
@@ -270,6 +271,7 @@ async function runPlanning(
     failRun: deps.failRun,
     persist: deps.persist,
     logger: deps.logger,
+    validatePlanPath: deps.validatePlanPath,
   });
   return handler.handle(run, feedback, additionalContext);
 }

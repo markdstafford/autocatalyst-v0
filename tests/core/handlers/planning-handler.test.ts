@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PlanningHandler } from '../../../src/core/handlers/planning-handler.js';
 import type { ThreadMessage } from '../../../src/types/events.js';
 import type { Run } from '../../../src/types/runs.js';
@@ -55,9 +58,19 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof PlanningHan
     failRun: vi.fn().mockResolvedValue(undefined),
     persist: vi.fn(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    validatePlanPath: vi.fn((_workspacePath: string, planPath: string) => planPath),
     ...overrides,
   };
   return { handler: new PlanningHandler(deps), deps };
+}
+
+function makeWorkspaceWithPlan(): { workspace: string; planPath: string } {
+  const workspace = mkdtempSync(join(tmpdir(), 'ac-planning-handler-'));
+  const plansDir = join(workspace, 'docs', 'superpowers', 'plans');
+  mkdirSync(plansDir, { recursive: true });
+  const planPath = join(plansDir, 'implementation-plan.md');
+  writeFileSync(planPath, '# Implementation plan\n', 'utf8');
+  return { workspace: realpathSync(workspace), planPath: realpathSync(planPath) };
 }
 
 describe('PlanningHandler', () => {
@@ -125,6 +138,45 @@ describe('PlanningHandler', () => {
     expect(result).toEqual({ status: 'failed' });
     expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, expect.any(Error));
     expect(run.stage).toBe('planning');
+  });
+
+  it('canonicalizes an existing plan path under docs/superpowers/plans before storing it', async () => {
+    const { workspace, planPath } = makeWorkspaceWithPlan();
+    const { handler } = makeHandler({
+      planner: { plan: vi.fn().mockResolvedValue({ status: 'complete', plan_path: 'docs/superpowers/plans/implementation-plan.md' }) },
+      validatePlanPath: undefined,
+    });
+    const run = makeRun({
+      workspace_path: workspace,
+      artifact: {
+        kind: 'feature_spec',
+        local_path: join(workspace, 'context-human', 'specs', 'feature-test.md'),
+        published_ref: { provider: 'artifact_publisher', id: 'CANVAS001' },
+        status: 'approved',
+      },
+    });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'implementing', plan_path: planPath });
+    expect(run.implementation_plan_path).toBe(planPath);
+  });
+
+  it('fails the run when plan_path is outside workspace docs/superpowers/plans', async () => {
+    const { workspace } = makeWorkspaceWithPlan();
+    const outsidePlan = join(workspace, 'outside-plan.md');
+    writeFileSync(outsidePlan, '# Outside plan\n', 'utf8');
+    const { handler, deps } = makeHandler({
+      planner: { plan: vi.fn().mockResolvedValue({ status: 'complete', plan_path: outsidePlan }) },
+      validatePlanPath: undefined,
+    });
+    const run = makeRun({ workspace_path: workspace });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, expect.any(Error));
+    expect(run.implementation_plan_path).toBeUndefined();
   });
 
   it('fails the run when planning agent returns failed status', async () => {

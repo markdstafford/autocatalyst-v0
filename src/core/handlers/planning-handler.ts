@@ -4,6 +4,7 @@ import type { ThreadMessage } from '../../types/events.js';
 import type { ConversationRef } from '../../types/channel.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import { requireArtifactRefs } from '../run-refs.js';
+import { validateImplementationPlanPath } from '../plan-path-validator.js';
 
 export interface PlanningHandlerDeps {
   planner: Pick<ImplementationPlanningAgent, 'plan'>;
@@ -12,6 +13,7 @@ export interface PlanningHandlerDeps {
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
+  validatePlanPath?: (workspacePath: string, planPath: string) => string;
 }
 
 export type PlanningResult =
@@ -79,13 +81,22 @@ export class PlanningHandler {
       return { status: 'failed' };
     }
 
-    run.implementation_plan_path = result.plan_path;
+    let planPath;
+    try {
+      planPath = (this.deps.validatePlanPath ?? validateImplementationPlanPath)(run.workspace_path, result.plan_path);
+    } catch (err) {
+      this.deps.logger.error({ event: 'planning.failed', run_id: run.id, request_id: run.request_id, error: String(err) }, 'Implementation planning returned invalid plan path');
+      await this.deps.failRun(run, feedback.conversation, err);
+      return { status: 'failed' };
+    }
+
+    run.implementation_plan_path = planPath;
     this.deps.persist();
     this.deps.transition(run, 'implementing');
     this.deps.logger.info(
-      { event: 'planning.completed', run_id: run.id, request_id: run.request_id, plan_path: result.plan_path },
+      { event: 'planning.completed', run_id: run.id, request_id: run.request_id, plan_path: planPath },
       'Implementation planning completed',
     );
-    return { status: 'implementing', plan_path: result.plan_path };
+    return { status: 'implementing', plan_path: planPath };
   }
 }

@@ -113,6 +113,7 @@ function makeDeps() {
       error: vi.fn(),
     },
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
+    validatePlanPath: vi.fn((_workspacePath: string, planPath: string) => planPath),
   };
 }
 

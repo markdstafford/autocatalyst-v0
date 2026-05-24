@@ -252,7 +252,7 @@ describe('OpenAIAgentSdkAgentRunner', () => {
     }));
 
     expect(vi.mocked(sdkRun).mock.calls[0][2]).toMatchObject({
-      maxTurns: 50,
+      maxTurns: 250,
     });
   });
 

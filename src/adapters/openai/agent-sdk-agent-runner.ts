@@ -14,7 +14,7 @@ import { materializeOpenAIRuntimeSkills } from './openai-runtime-skill-materiali
 import { buildSandboxEnvironment } from '../sandbox-environment.js';
 import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy, type RequestLogOptions } from '../anthropic/anthropic-beta-header-filter-proxy.js';
 
-const DEFAULT_OPENAI_AGENT_MAX_TURNS = 50;
+const DEFAULT_OPENAI_AGENT_MAX_TURNS = 250;
 
 interface RunFnOptions {
   maxTurns: number;
