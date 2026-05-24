@@ -51,6 +51,8 @@ export interface Run {
   stage: RunStage;
   workspace_path: string;
   branch: string;
+  current_model?: string;
+  last_agent_request_at?: string;
   artifact?: Artifact;
   implementation_plan_path?: string;
   impl_feedback_ref: string | undefined;

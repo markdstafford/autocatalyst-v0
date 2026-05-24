@@ -23,6 +23,18 @@ export interface AgentRoute {
   artifact_kind?: ArtifactKind;
 }
 
+export interface AgentInvocationMetadata {
+  model: string;
+  requested_at: string;
+  route: AgentRoute;
+}
+
+export interface AgentServiceTelemetry {
+  run_id?: string;
+  request_id?: string;
+  onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
+}
+
 export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
 export type AgentSettingSource = 'user' | 'project' | 'local';
 
