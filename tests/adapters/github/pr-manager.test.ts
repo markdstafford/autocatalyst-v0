@@ -108,27 +108,67 @@ describe('GHPRManager — createPR() title derivation', () => {
 // ---- createPR: PR body ----
 
 describe('GHPRManager — createPR() PR body', () => {
-  it('body contains summary and ## Testing section when impl_result provided', async () => {
+  it('body renders structured implementation result fields when provided', async () => {
     const execFn = makeExecFn();
     const manager = new GHPRManager(execFn, { logDestination: nullDest });
     await manager.createPR(tmpDir, 'branch', specPath, {
-      impl_result: { summary: 'Built the thing.', testing_instructions: 'Run npm test.' },
+      issue_number: 182,
+      impl_result: {
+        summary: 'legacy fallback — use review_summary instead',
+        testing_instructions: 'legacy fallback — use testing_steps instead',
+        review_summary: {
+          changes: ['Stored review summary fields', 'Updated GitHub PR body renderer'],
+          confirm: ['PR summary uses review_summary.changes', 'PR verify uses review_summary.confirm'],
+        },
+        testing_steps: ['cd /Users/mark.stafford/.autocatalyst/workspaces/autocatalyst/4ec756c1-2385-45c2-ac96-48ba64d6be8a', 'npm test -- tests/adapters/github/pr-manager.test.ts'],
+      },
     });
     const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
     const body = prArgs[prArgs.indexOf('--body') + 1] as string;
-    expect(body).toContain('Built the thing.');
-    expect(body).toContain('## Testing');
-    expect(body).toContain('Run npm test.');
+    expect(body).toContain('## Summary');
+    expect(body).toContain('- Stored review summary fields');
+    expect(body).toContain('- Updated GitHub PR body renderer');
+    expect(body).toContain('## Verify');
+    expect(body).toContain('- [ ] PR summary uses review_summary.changes');
+    expect(body).toContain('- [ ] PR verify uses review_summary.confirm');
+    expect(body).toContain('## Test steps');
+    expect(body).toContain('1. cd /Users/mark.stafford/.autocatalyst/workspaces/autocatalyst/4ec756c1-2385-45c2-ac96-48ba64d6be8a');
+    expect(body).toContain('2. npm test -- tests/adapters/github/pr-manager.test.ts');
+    expect(body).toContain('Closes #182');
+    expect(body).not.toContain('legacy fallback — use review_summary instead');
+    expect(body).not.toContain('legacy fallback — use testing_steps instead');
+    expect(body).not.toContain('## Testing');
   });
 
-  it('body contains placeholder text when impl_result not provided', async () => {
+  it('body falls back to legacy summary and testing instructions when structured fields are absent', async () => {
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+    await manager.createPR(tmpDir, 'branch', specPath, {
+      impl_result: {
+        summary: 'Built the legacy-only thing.',
+        testing_instructions: 'Run npm test for the legacy-only thing.',
+      },
+    });
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    const body = prArgs[prArgs.indexOf('--body') + 1] as string;
+    expect(body).toContain('## Summary');
+    expect(body).toContain('Built the legacy-only thing.');
+    expect(body).toContain('## Testing');
+    expect(body).toContain('Run npm test for the legacy-only thing.');
+    expect(body).not.toContain('## Verify');
+    expect(body).not.toContain('## Test steps');
+  });
+
+  it('body renders safe defaults when impl_result is not provided', async () => {
     const execFn = makeExecFn();
     const manager = new GHPRManager(execFn, { logDestination: nullDest });
     await manager.createPR(tmpDir, 'branch', specPath);
     const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
     const body = prArgs[prArgs.indexOf('--body') + 1] as string;
-    expect(body.length).toBeGreaterThan(0);
+    expect(body).toContain('## Summary');
+    expect(body).toContain('No implementation summary provided.');
     expect(body).toContain('## Testing');
+    expect(body).toContain('No testing instructions provided.');
   });
 
   it('body contains "Closes #42" when spec frontmatter issue is 42', async () => {
@@ -150,14 +190,49 @@ describe('GHPRManager — createPR() PR body', () => {
     expect(body).not.toContain('Closes #');
   });
 
-  it('body contains spec path in footer', async () => {
+  it('body renders repository-relative spec path when artifact is inside the workspace', async () => {
     const execFn = makeExecFn();
     const manager = new GHPRManager(execFn, { logDestination: nullDest });
     await manager.createPR(tmpDir, 'branch', specPath);
     const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
     const body = prArgs[prArgs.indexOf('--body') + 1] as string;
-    expect(body).toContain('Spec:');
-    expect(body).toContain(specPath);
+    expect(body).toContain('Spec: `context-human/specs/feature-my-feature.md`');
+    expect(body).not.toContain(specPath);
+  });
+
+  it('body omits Spec footer for internal triage artifacts', async () => {
+    mkdirSync(join(tmpDir, '.autocatalyst', 'triage'), { recursive: true });
+    const triagePath = join(tmpDir, '.autocatalyst', 'triage', 'triage-bug-182.md');
+    writeFileSync(triagePath, TRIAGE_DOC_NO_H1, 'utf-8');
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+
+    await manager.createPR(tmpDir, 'branch', triagePath, { issue_number: 182 });
+
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    const body = prArgs[prArgs.indexOf('--body') + 1] as string;
+    expect(body).not.toContain('Spec:');
+    expect(body).not.toContain(triagePath);
+    expect(body).toContain('Closes #182');
+  });
+
+  it('body omits Spec footer when artifact path is outside the workspace', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'pr-manager-outside-'));
+    const outsidePath = join(outsideDir, 'external-spec.md');
+    writeFileSync(outsidePath, SPEC_NO_ISSUE, 'utf-8');
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+
+    try {
+      await manager.createPR(tmpDir, 'branch', outsidePath);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    const body = prArgs[prArgs.indexOf('--body') + 1] as string;
+    expect(body).not.toContain('Spec:');
+    expect(body).not.toContain(outsidePath);
   });
 });
 
