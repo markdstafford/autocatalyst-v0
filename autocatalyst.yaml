@@ -82,7 +82,7 @@ ai:
     pr.title_generate: grove-gpt-5.4-nano
     artifact.create: grove-gpt-5.5-high
     artifact.revise: grove-gpt-5.5-high
-    implementation.plan: grove-sonnet-4.6-medium
+    implementation.plan: grove-gpt-5.5-high
     implementation.run: grove-sonnet-4.6-medium
     implementation.review.initial: grove-gpt-5.5-high
     implementation.review.final: grove-gpt-5.5-medium
