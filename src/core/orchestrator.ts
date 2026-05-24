@@ -8,7 +8,7 @@ import { createLogger } from './logger.js';
 import type { ChannelAdapter } from '../adapters/channel-adapter.js';
 import { channelKey, type ConversationRef, type MessageRef } from '../types/channel.js';
 import type { WorkspaceManager } from './workspace-manager.js';
-import type { ArtifactAuthoringAgent, ImplementationAgent, QuestionAnsweringAgent } from '../types/ai.js';
+import type { ArtifactAuthoringAgent, ImplementationAgent, ImplementationPlanningAgent, QuestionAnsweringAgent } from '../types/ai.js';
 import type { ArtifactContentSource, ArtifactPublisher } from '../types/publisher.js';
 import type { Run, RunStage, RequestIntent } from '../types/runs.js';
 import { VALID_RUN_STAGES } from '../types/runs.js';
@@ -32,7 +32,8 @@ import { extractIssueReference, buildEnrichedClassificationMessage } from './iss
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
-  if (stage === 'reviewing_spec') return 'implementing';
+  if (stage === 'reviewing_spec') return 'planning';
+  if (stage === 'awaiting_planning_input') return 'planning';
   if (stage === 'reviewing_implementation') return 'implementing';
   if (stage === 'awaiting_impl_input') return 'implementing';
   return stage;
@@ -64,6 +65,7 @@ export interface OrchestratorDeps {
   intentClassifier?: IntentClassifier;
   questionAnswerer?: QuestionAnsweringAgent;
   specCommitter?: SpecCommitter;
+  implementationPlanner?: ImplementationPlanningAgent;
   implementer?: ImplementationAgent;
   implFeedbackPage?: ImplementationReviewPublisher;
   prManager?: PRManager;
@@ -79,6 +81,7 @@ export interface OrchestratorDeps {
   handlerRegistry?: HandlerRegistry;
   branchGuard?: BranchGuard;
   reviewCoordinator?: ImplementationReviewCoordinator;
+  validatePlanPath?: (workspacePath: string, planPath: string) => string;
 }
 
 interface OrchestratorOptions {
@@ -207,7 +210,7 @@ export class OrchestratorImpl implements Orchestrator {
       this.logger.debug({ event: 'classify.run_not_found', request_id: event.payload.request_id }, 'No run found; discarding');
       return 'discard';
     }
-    const actionableStages: RunStage[] = ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'pr_open'];
+    const actionableStages: RunStage[] = ['reviewing_spec', 'awaiting_planning_input', 'reviewing_implementation', 'awaiting_impl_input', 'pr_open'];
     if (!actionableStages.includes(run.stage)) {
       this.logger.debug({ event: 'classify.stage_blocked', stage: run.stage }, 'Stage blocked: discarding thread_message');
       this.deps.adapter.react?.(event.payload.origin, 'ac-message-discarded').catch((err: unknown) => {
@@ -529,8 +532,10 @@ export class OrchestratorImpl implements Orchestrator {
       });
       if (handler) {
         await handler(event, run);
+        return;
       }
       // 'ignore' and unregistered intents: silently discard
+      this.restoreStageAfterUnroutedThreadMessage(run, routingStage, intent);
     }
   }
 
@@ -544,6 +549,7 @@ export class OrchestratorImpl implements Orchestrator {
       feedbackSource: this.deps.feedbackSource,
       questionAnswerer: this.deps.questionAnswerer,
       specCommitter: this.deps.specCommitter,
+      implementationPlanner: this.deps.implementationPlanner,
       implementer: this.deps.implementer,
       implFeedbackPage: this.deps.implFeedbackPage,
       prManager: this.deps.prManager,
@@ -561,6 +567,7 @@ export class OrchestratorImpl implements Orchestrator {
       logger: this.logger,
       branchGuard: this.deps.branchGuard,
       reviewCoordinator: this.deps.reviewCoordinator,
+      validatePlanPath: this.deps.validatePlanPath,
     });
   }
 
@@ -610,6 +617,18 @@ export class OrchestratorImpl implements Orchestrator {
     this.logger.error(
       { event: 'intent_classification.failed', run_id: run.id, request_id: run.request_id, from_stage: from, restored_stage: stage, error: String(error) },
       'Intent classification failed',
+    );
+  }
+
+  private restoreStageAfterUnroutedThreadMessage(run: Run, stage: RunStage, intent: Intent): void {
+    const from = run.stage;
+    run.stage = stage;
+    run.updated_at = new Date().toISOString();
+    this._pendingStage.delete(run.request_id);
+    this._persistRuns();
+    this.logger.debug(
+      { event: 'intent_classification.unrouted', run_id: run.id, request_id: run.request_id, intent, from_stage: from, restored_stage: stage },
+      'Intent had no handler; restored stage after discard',
     );
   }
 

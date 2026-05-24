@@ -8,8 +8,10 @@ export function requiredSkillsForRoute(route: AgentRoute): AgentSkillRef[] {
       return [];
     case 'issue.triage':
       return ['mm:issue-triage'];
+    case 'implementation.plan':
+      return ['superpowers:writing-plans'];
     case 'implementation.run':
-      return ['superpowers:writing-plans', 'superpowers:subagent-driven-development'];
+      return ['superpowers:subagent-driven-development'];
     case 'artifact.revise':
     case 'intent.classify':
     case 'pr.title_generate':

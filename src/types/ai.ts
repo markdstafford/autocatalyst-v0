@@ -8,6 +8,7 @@ export type AgentTaskKind =
   | 'intent.classify'
   | 'artifact.create'
   | 'artifact.revise'
+  | 'implementation.plan'
   | 'implementation.run'
   | 'implementation.review.initial'
   | 'implementation.review.final'
@@ -215,6 +216,23 @@ export interface ArtifactAuthoringAgent {
 
 export type ImplementationStatus = 'complete' | 'needs_input' | 'failed';
 
+export interface ImplementationPlanResult {
+  status: ImplementationStatus;
+  plan_path?: string;
+  question?: string;
+  error?: string;
+}
+
+export interface ImplementationPlanningAgent {
+  plan(
+    artifact_path: string,
+    working_directory: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
+    additional_context?: string,
+  ): Promise<ImplementationPlanResult>;
+}
+
 export interface ImplementationResult {
   status: ImplementationStatus;
   summary?: string;
@@ -238,6 +256,7 @@ export interface ImplementationAgent {
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
     telemetry?: { run_id?: string; request_id?: string },
+    plan_path?: string,
   ): Promise<ImplementationResult>;
 }
 

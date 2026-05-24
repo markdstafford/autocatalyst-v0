@@ -58,8 +58,7 @@ export class ArtifactApprovalHandler {
     if (policy.implementation_required) {
       run.attempt += 1;
       this.deps.persist();
-      this.deps.transition(run, 'implementing');
-      this.deps.logger.info({ event: 'implementation.started', run_id: run.id, request_id: run.request_id }, 'Implementation started');
+      this.deps.transition(run, 'planning');
     } else {
       this.deps.transition(run, 'done');
     }
@@ -73,7 +72,7 @@ export class ArtifactApprovalHandler {
 
   private async acknowledgeApproval(feedback: ThreadMessage, policy: ArtifactLifecyclePolicy): Promise<void> {
     try {
-      const next = policy.implementation_required ? ' and starting implementation' : '';
+      const next = policy.implementation_required ? ' and starting planning' : '';
       const ackMsg = policy.sync_issue_on_approval
         ? `Approved \u2014 writing triage to issue${next}.`
         : `Approved \u2014 committing spec${next}.`;

@@ -6,6 +6,7 @@ import { describe, expect, it, test, vi } from 'vitest';
 import {
   AgentRunnerArtifactAuthoringAgent,
   AgentRunnerImplementationAgent,
+  AgentRunnerImplementationPlanningAgent,
   AgentRunnerIssueTriageAgent,
   AgentRunnerQuestionAnsweringAgent,
   IssueFilingService,
@@ -68,6 +69,7 @@ function makePolicy(): DefaultAgentRoutingPolicy {
       'artifact.create': 'agent',
       'artifact.revise': 'agent',
       'question.answer': 'agent',
+      'implementation.plan': 'agent',
       'implementation.run': 'agent',
       'issue.triage': 'agent',
     },
@@ -234,6 +236,93 @@ describe('AgentRunner-backed core AI services', () => {
 
       expect(calls[0].prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
       expect(calls[0].prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
+  test('runs implementation planning through AgentRunner and parses plan_path', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-plan-'));
+    try {
+      const specPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      const planPath = join(workspace, 'docs', 'superpowers', 'plans', '2026-05-23-feature-test.md');
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', plan_path: planPath }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationPlanningAgent(runner, makePolicy());
+      const progress = vi.fn();
+
+      await expect(service.plan(specPath, workspace, progress, { run_id: 'run-1', request_id: 'req-1' })).resolves.toEqual({
+        status: 'complete',
+        plan_path: planPath,
+        question: undefined,
+        error: undefined,
+      });
+
+      expect(calls[0].route).toEqual({ task: 'implementation.plan', stage: 'planning' });
+      expect(calls[0].telemetry).toMatchObject({ phase: 'planning', route_task: 'implementation.plan', run_id: 'run-1', request_id: 'req-1' });
+      expect(calls[0].prompt).toContain('superpowers:writing-plans');
+      expect(calls[0].prompt).toContain('Do not execute the plan in this session');
+      expect(progress).toHaveBeenCalledWith('working');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation planning prompt includes follow-up context when planning is resumed', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-plan-context-'));
+    try {
+      const specPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      const planPath = join(workspace, 'docs', 'superpowers', 'plans', '2026-05-23-feature-test.md');
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', plan_path: planPath }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationPlanningAgent(runner, makePolicy());
+
+      await service.plan(specPath, workspace, undefined, { run_id: 'run-1', request_id: 'req-1' }, 'Limit scope to the adapter path.');
+
+      expect(calls[0].prompt).toContain('Additional planning context from the human:');
+      expect(calls[0].prompt).toContain('Limit scope to the adapter path.');
+      expect(calls[0].prompt).toContain('Use this context to answer the previous planning question before writing the plan.');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation prompt with a plan path skips writing-plans and reads the saved plan', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-existing-plan-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const planPath = join(workspace, 'docs', 'superpowers', 'plans', 'implementation-plan.md');
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done', testing_instructions: 'Run tests' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await service.implement('/tmp/spec.md', workspace, undefined, undefined, undefined, planPath);
+
+      expect(calls[0].prompt).toContain(`Read the existing implementation plan at: ${planPath}`);
+      expect(calls[0].prompt).toContain('Do not create a new implementation plan');
+      expect(calls[0].prompt).not.toContain('superpowers:writing-plans');
+      expect(calls[0].prompt).toContain('superpowers:subagent-driven-development');
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

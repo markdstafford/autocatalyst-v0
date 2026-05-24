@@ -16,6 +16,7 @@ import type {
   ArtifactComment as NotionComment,
   ArtifactCommentResponse as NotionCommentResponse,
   ImplementationAgent,
+  ImplementationPlanningAgent,
   ImplementationResult,
   QuestionAnsweringAgent,
 } from '../../src/types/ai.js';
@@ -350,6 +351,13 @@ function makeIssueFiler(resultOverrides: Partial<FilingResult> = {}): IssueFiler
   };
   return {
     file: vi.fn().mockResolvedValue(defaultResult),
+  };
+}
+
+
+function makeImplementationPlanningAgent(planPath = '/ws/request-001/docs/superpowers/plans/implementation-plan.md'): ImplementationPlanningAgent {
+  return {
+    plan: vi.fn().mockResolvedValue({ status: 'complete', plan_path: planPath }),
   };
 }
 
@@ -1065,6 +1073,45 @@ describe('Orchestrator — intent classification routing', () => {
     expect(run.stage).toBe('reviewing_spec');
   });
 
+  it('ignored message in awaiting_planning_input restores the waiting stage for later replies', async () => {
+    const adapter = makeMockAdapter();
+    const classifier: IntentClassifier = {
+      classify: vi.fn().mockResolvedValue('ignore'),
+    };
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+        artifactPublisher: makeArtifactPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        channelRepoMap: makeChannelRepoMap(),
+        intentClassifier: classifier,
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    const run = makeRun({ stage: 'awaiting_planning_input' });
+    runs.set('request-001', run);
+    adapter._emit({ type: 'thread_message', payload: makeFeedback({ content: 'thanks' }) });
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(classifier.classify).toHaveBeenCalledWith('thanks', 'awaiting_planning_input');
+    expect(run.stage).toBe('awaiting_planning_input');
+
+    const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify({
+      type: 'thread_message',
+      payload: makeFeedback({ content: 'Use the adapter composition path.' }),
+    });
+    expect(action).toBe('dispatch');
+    expect(run.stage).toBe('planning');
+
+    await orch.stop();
+  });
+
   it('classifier called with feedback content and run stage when in reviewing_spec', async () => {
     const adapter = makeMockAdapter();
     const ic = makeIntentClassifier('idea');
@@ -1306,6 +1353,7 @@ describe('Orchestrator — done stage guard', () => {
 function makeApprovalOrch(opts: {
   specCommitter?: SpecCommitter;
   implementer?: ImplementationAgent;
+  implementationPlanner?: ImplementationPlanningAgent;
   implFeedbackPage?: ImplementationReviewPublisher;
   postMessage?: ReturnType<typeof vi.fn>;
   postError?: ReturnType<typeof vi.fn>;
@@ -1320,10 +1368,12 @@ function makeApprovalOrch(opts: {
       intentClassifier: makeIntentClassifier('approval'),
       specCommitter: opts.specCommitter ?? makeSpecCommitter(),
       implementer: opts.implementer ?? makeImplementationAgent(),
+      implementationPlanner: opts.implementationPlanner ?? makeImplementationPlanningAgent(),
       implFeedbackPage: opts.implFeedbackPage ?? makeImplFeedbackPage(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
       channelRepoMap: makeChannelRepoMap(),
+      validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
     } as never,
     { logDestination: nullDest },
   );
@@ -1340,14 +1390,14 @@ async function approveSpec(
   await vi.waitUntil(
     () => {
       const r = runs.get('request-001');
-      return r?.stage !== 'reviewing_spec' && r?.stage !== 'implementing';
+      return r?.stage !== 'reviewing_spec' && r?.stage !== 'planning' && r?.stage !== 'implementing';
     },
     { timeout: 3000 },
   );
 }
 
 describe('Orchestrator — _handleSpecApproval happy path', () => {
-  it('run transitions to implementing before any component is called', async () => {
+  it('run transitions to planning before any component is called', async () => {
     const adapter = makeMockAdapter();
     const stages: string[] = [];
     const commitFn = vi.fn().mockImplementation(async () => {
@@ -1360,7 +1410,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     await approveSpec(orch, adapter);
     await orch.stop();
 
-    expect(stages[0]).toBe('implementing');
+    expect(stages[0]).toBe('planning');
   });
 
   it('posts approval acknowledgement to Slack before committing', async () => {
@@ -1421,6 +1471,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
   });
 
@@ -1564,6 +1615,8 @@ describe('Orchestrator — _runImplementation onProgress wiring', () => {
         intentClassifier: makeIntentClassifier('approval'),
         specCommitter: makeSpecCommitter(),
         implementer: impl as ImplementationAgent,
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implFeedbackPage: makeImplFeedbackPage(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
@@ -1706,6 +1759,8 @@ function makeImplFeedbackOrch(opts: {
       artifactPublisher: makeArtifactPublisher(),
       intentClassifier: makeIntentClassifier(opts.intentOverride ?? 'feedback'),
       specCommitter: makeSpecCommitter(),
+      implementationPlanner: makeImplementationPlanningAgent(),
+      validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
       implementer: opts.implementer ?? makeImplementationAgent(),
       implFeedbackPage: opts.implFeedbackPage ?? makeImplFeedbackPage(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
@@ -1965,6 +2020,8 @@ function makeApprovalOrch2(opts: {
       artifactPublisher: makeArtifactPublisher(),
       intentClassifier: makeIntentClassifier('approval'),
       specCommitter: opts.specCommitter ?? makeSpecCommitter(),
+      implementationPlanner: makeImplementationPlanningAgent(),
+      validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
       implementer: makeImplementationAgent(),
       implFeedbackPage: makeImplFeedbackPage(),
       prManager: opts.prManager ?? makePRManager(),
@@ -2120,6 +2177,8 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
         artifactPublisher,
         intentClassifier: makeIntentClassifier('approval'),
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         prManager: makePRManager(),
@@ -2206,6 +2265,8 @@ function makeApprovalOrch3(opts: {
       artifactPublisher: makeArtifactPublisher(),
       intentClassifier: makeIntentClassifier('approval'),
       specCommitter: makeSpecCommitter(),
+      implementationPlanner: makeImplementationPlanningAgent(),
+      validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
       implementer: makeImplementationAgent(),
       implFeedbackPage: makeImplFeedbackPage(),
       prManager: opts.prManager ?? makePRManager(),
@@ -2304,6 +2365,8 @@ describe('Orchestrator — pr_open routing guards', () => {
         intentClassifier: ic,
         questionAnswerer: qa,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         prManager: makePRManager(),
@@ -2337,6 +2400,8 @@ describe('Orchestrator — pr_open routing guards', () => {
         artifactPublisher: makeArtifactPublisher(),
         intentClassifier: ic,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         prManager: makePRManager(),
@@ -2372,6 +2437,8 @@ describe('Orchestrator — pr_open routing guards', () => {
         artifactPublisher: makeArtifactPublisher(),
         intentClassifier: ic,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         prManager,
@@ -2541,6 +2608,8 @@ describe('Orchestrator — run persistence', () => {
         artifactPublisher: makeArtifactPublisher(),
         intentClassifier: makeIntentClassifier('approval'),
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         postError: vi.fn().mockResolvedValue(undefined),
@@ -2581,6 +2650,8 @@ describe('Orchestrator — run persistence', () => {
         artifactPublisher: makeArtifactPublisher(),
         intentClassifier: makeIntentClassifier('feedback'),
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         postError: vi.fn().mockResolvedValue(undefined),
@@ -2622,6 +2693,8 @@ describe('Orchestrator — run persistence', () => {
         artifactPublisher: makeArtifactPublisher(),
         intentClassifier: makeIntentClassifier('approval'),
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage,
         postError: vi.fn().mockResolvedValue(undefined),
@@ -2994,7 +3067,7 @@ describe('_classify — serial classification gate', () => {
     await orch.stop();
   });
 
-  it('thread_message in reviewing_spec advances stage to implementing and returns dispatch', async () => {
+  it('thread_message in reviewing_spec advances stage to planning and returns dispatch', async () => {
     const { records, destination } = makeLogCapture();
     const adapter = makeMockAdapter();
     const orch = new OrchestratorImpl({
@@ -3021,13 +3094,13 @@ describe('_classify — serial classification gate', () => {
     const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(event);
     expect(action).toBe('dispatch');
     // Stage must be advanced before _classify returns
-    expect(run.stage).toBe('implementing');
+    expect(run.stage).toBe('planning');
     expect(records.find(r => r['event'] === 'classify.dispatched')).toBeDefined();
 
     await orch.stop();
   });
 
-  it('duplicate approval: first returns dispatch advancing stage; second sees implementing and returns discard', async () => {
+  it('duplicate approval: first returns dispatch advancing stage; second sees planning and returns discard', async () => {
     const adapter = makeMockAdapter();
     const orch = new OrchestratorImpl({
       adapter,
@@ -3055,7 +3128,7 @@ describe('_classify — serial classification gate', () => {
 
     const action1 = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(approval1);
     expect(action1).toBe('dispatch');
-    expect(run.stage).toBe('implementing');
+    expect(run.stage).toBe('planning');
 
     const action2 = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(approval2);
     expect(action2).toBe('discard');
@@ -3566,13 +3639,13 @@ describe('concurrent dispatch — additional coverage', () => {
 
     await vi.waitUntil(() => callCount === 2, { timeout: 300 });
 
-    // Both runs advanced to implementing by _classify
-    expect(runA.stage).toBe('implementing');
-    expect(runB.stage).toBe('implementing');
+    // Both runs advanced to planning by _classify
+    expect(runA.stage).toBe('planning');
+    expect(runB.stage).toBe('planning');
 
     // Mutating runA's stage should not affect runB
     runA.stage = 'done';
-    expect(runB.stage).toBe('implementing');
+    expect(runB.stage).toBe('planning');
 
     ctrlA.resolve();
     ctrlB.resolve();
@@ -4043,7 +4116,7 @@ describe('observability — log field correctness', () => {
     const e = makeEventFixture('thread_message', { request_id: 'req-rev' });
     await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(e);
     const log = records.find(r => r['event'] === 'classify.dispatched');
-    expect(log!['stage']).toBe('implementing');
+    expect(log!['stage']).toBe('planning');
     await orch.stop();
   });
 
@@ -4442,6 +4515,8 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
         prManager: deps.prManager,
@@ -4481,6 +4556,8 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
         prManager: deps.prManager,
@@ -4522,6 +4599,8 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
       } as never,
@@ -4563,6 +4642,8 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
         prManager: deps.prManager,
@@ -4852,6 +4933,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,
@@ -4905,6 +4988,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,
@@ -4957,6 +5042,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,
@@ -5013,6 +5100,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer,
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,
@@ -5062,6 +5151,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer,
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,
@@ -5108,6 +5199,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer,
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,
@@ -5151,6 +5244,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: sc,
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,
@@ -5205,6 +5300,8 @@ describe('Orchestrator — bug/chore approval paths', () => {
         artifactAuthoringAgent: makeArtifactAuthoringAgent(),
         artifactPublisher: cp,
         specCommitter: makeSpecCommitter(),
+        implementationPlanner: makeImplementationPlanningAgent(),
+        validatePlanPath: (_workspacePath: string, planPath: string) => planPath,
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         issueManager: im,

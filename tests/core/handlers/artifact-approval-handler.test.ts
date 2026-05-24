@@ -115,7 +115,7 @@ describe('ArtifactApprovalHandler', () => {
     expect(deps.issueManager.create).not.toHaveBeenCalled();
     expect(deps.artifactPublisher.setIssueLink).not.toHaveBeenCalled();
     expect(run.attempt).toBe(1);
-    expect(run.stage).toBe('implementing');
+    expect(run.stage).toBe('planning');
     expect(run.artifact?.status).toBe('approved');
   });
 

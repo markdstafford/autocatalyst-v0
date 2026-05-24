@@ -38,6 +38,7 @@ import { ModelPRTitleGenerator } from '../core/ai/pr-title-generator.js';
 import {
   AgentRunnerArtifactAuthoringAgent,
   AgentRunnerImplementationAgent,
+  AgentRunnerImplementationPlanningAgent,
   AgentRunnerIssueTriageAgent,
   AgentRunnerQuestionAnsweringAgent,
   IssueFilingService,
@@ -153,6 +154,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     },
   });
   const implementer = new AgentRunnerImplementationAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
+  const implementationPlanner = new AgentRunnerImplementationPlanningAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
   const prManager = new GHPRManager();
   const issueManager = new GHIssueManager();
   const issueTriageAgent = new AgentRunnerIssueTriageAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
@@ -191,6 +193,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     intentClassifier,
     questionAnswerer,
     specCommitter: artifactDeps.specCommitter,
+    implementationPlanner,
     implementer,
     implFeedbackPage: artifactDeps.implFeedbackPage,
     prManager,

@@ -3,7 +3,7 @@ import type pino from 'pino';
 import type { IssueFiler } from '../types/issue-filing.js';
 import type { IssueManager, PRManager } from '../types/issue-tracker.js';
 import type { PRTitleGenerator } from './ai/pr-title-generator.js';
-import type { ArtifactAuthoringAgent, ImplementationAgent, QuestionAnsweringAgent } from '../types/ai.js';
+import type { ArtifactAuthoringAgent, ImplementationAgent, ImplementationPlanningAgent, QuestionAnsweringAgent } from '../types/ai.js';
 import type { Request, ThreadMessage } from '../types/events.js';
 import type { ConversationRef } from '../types/channel.js';
 import type { FeedbackSource } from '../types/feedback-source.js';
@@ -24,6 +24,7 @@ import { ArtifactFeedbackHandler } from './handlers/artifact-feedback-handler.js
 import { ImplementationStartHandler } from './handlers/implementation-start-handler.js';
 import { ImplementationFeedbackHandler } from './handlers/implementation-feedback-handler.js';
 import { ImplementationApprovalHandler } from './handlers/implementation-approval-handler.js';
+import { PlanningHandler } from './handlers/planning-handler.js';
 import { IssueFilingHandler } from './handlers/issue-filing-handler.js';
 import { PrMergeHandler } from './handlers/pr-merge-handler.js';
 import { QuestionHandler } from './handlers/question-handler.js';
@@ -76,6 +77,7 @@ export interface DefaultHandlerRegistryDeps {
   feedbackSource?: FeedbackSource;
   questionAnswerer?: QuestionAnsweringAgent;
   specCommitter?: Pick<SpecCommitter, 'commit' | 'updateStatus'>;
+  implementationPlanner?: ImplementationPlanningAgent;
   implementer?: ImplementationAgent;
   implFeedbackPage?: ImplementationReviewPublisher;
   prManager?: PRManager;
@@ -93,6 +95,7 @@ export interface DefaultHandlerRegistryDeps {
   logger: Pick<pino.Logger, 'debug' | 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
   reviewCoordinator?: ImplementationReviewCoordinator;
+  validatePlanPath?: (workspacePath: string, planPath: string) => string;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
@@ -134,6 +137,11 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
   });
 
   registerThreadMessage('reviewing_spec', 'feedback', 'ArtifactFeedbackHandler', (feedback, run) => handleArtifactFeedback(deps, branchGuard, feedback, run));
+  registerThreadMessage('awaiting_planning_input', 'feedback', 'PlanningHandler.awaiting', async (feedback, run) => {
+    const planning = await runPlanning(deps, feedback, run, feedback.content);
+    if (planning.status !== 'implementing') return;
+    await runImplementation(deps, branchGuard, feedback, run);
+  });
   registerThreadMessage('reviewing_implementation', 'feedback', 'ImplementationFeedbackHandler.reviewing', (feedback, run) => handleImplementationFeedback(deps, branchGuard, feedback, run, 'reviewing_implementation'));
   registerThreadMessage('awaiting_impl_input', 'feedback', 'ImplementationFeedbackHandler.awaiting', (feedback, run) => handleImplementationFeedback(deps, branchGuard, feedback, run, 'awaiting_impl_input'));
   registerThreadMessage('pr_open', 'feedback', 'PrOpenFeedbackHandler', (feedback, run) => handlePrOpenFeedback(deps, feedback, run));
@@ -141,11 +149,18 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
     const result = await approveArtifact(deps, branchGuard, run, feedback);
     if (result.status === 'failed') return;
     if (!result.implementation_required) return;
+    const planning = await runPlanning(deps, feedback, run);
+    if (planning.status !== 'implementing') return;
     await runImplementation(deps, branchGuard, feedback, run);
   });
   registerThreadMessage('reviewing_implementation', 'approval', 'ImplementationApprovalHandler', (feedback, run) => handleImplementationApproval(deps, branchGuard, feedback, run));
   registerThreadMessage('pr_open', 'approval', 'PrMergeHandler', (feedback, run) => handlePrMerge(deps, feedback, run));
   registerThreadMessage('reviewing_spec', 'question', 'QuestionHandler.spec', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'reviewing_spec'));
+  registerThreadMessage('awaiting_planning_input', 'question', 'PlanningHandler.awaitingQuestion', async (feedback, run) => {
+    const planning = await runPlanning(deps, feedback, run, feedback.content);
+    if (planning.status !== 'implementing') return;
+    await runImplementation(deps, branchGuard, feedback, run);
+  });
   registerThreadMessage('reviewing_implementation', 'question', 'QuestionHandler.impl', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'reviewing_implementation'));
   registerThreadMessage('awaiting_impl_input', 'question', 'QuestionHandler.awaiting', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'awaiting_impl_input'));
   registerThreadMessage('pr_open', 'question', 'QuestionHandler.pr', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'pr_open'));
@@ -237,6 +252,28 @@ async function runImplementation(
     reviewCoordinator: deps.reviewCoordinator,
   });
   await handler.handle(run, feedback, additionalContext);
+}
+
+async function runPlanning(
+  deps: DefaultHandlerRegistryDeps,
+  feedback: ThreadMessage,
+  run: Run,
+  additionalContext?: string,
+): Promise<Awaited<ReturnType<PlanningHandler['handle']>>> {
+  if (!deps.implementationPlanner) {
+    await deps.failRun(run, feedback.conversation, new Error('Implementation planner is required for planning'));
+    return { status: 'failed' };
+  }
+  const handler = new PlanningHandler({
+    planner: deps.implementationPlanner,
+    postMessage: deps.postMessage,
+    transition: deps.transition,
+    failRun: deps.failRun,
+    persist: deps.persist,
+    logger: deps.logger,
+    validatePlanPath: deps.validatePlanPath,
+  });
+  return handler.handle(run, feedback, additionalContext);
 }
 
 async function handleImplementationFeedback(

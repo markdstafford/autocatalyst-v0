@@ -51,6 +51,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
       published_ref: { provider: 'artifact_publisher', id: 'CANVAS001' },
       status: 'approved',
     },
+    implementation_plan_path: '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     impl_feedback_ref: undefined,
     issue: undefined,
     attempt: 1,
@@ -100,6 +101,21 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
 }
 
 describe('ImplementationStartHandler', () => {
+  it('fails the run when starting initial implementation without a plan path', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ implementation_plan_path: undefined });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(
+      run,
+      TEST_CONVERSATION,
+      expect.objectContaining({ message: 'Run missing implementation plan path for implementation' }),
+    );
+    expect(deps.implementer.implement).not.toHaveBeenCalled();
+  });
+
   it('starts implementation from typed artifact refs when legacy spec fields are absent', async () => {
     const { handler, deps } = makeHandler();
     const run = makeRun({
@@ -122,6 +138,7 @@ describe('ImplementationStartHandler', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith({
       artifact_ref: 'CANVAS-TYPED',
@@ -154,6 +171,7 @@ describe('ImplementationStartHandler', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith({
       artifact_ref: 'CANVAS001',

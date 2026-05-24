@@ -35,6 +35,11 @@ export class ImplementationStartHandler {
       await this.deps.failRun(run, feedback.conversation, new Error('Run missing artifact local path or publisher ref for implementation'));
       return { status: 'failed' };
     }
+    const planPath = additionalContext ? undefined : run.implementation_plan_path;
+    if (!additionalContext && !planPath) {
+      await this.deps.failRun(run, feedback.conversation, new Error('Run missing implementation plan path for implementation'));
+      return { status: 'failed' };
+    }
 
     const onProgress = (message: string): Promise<void> =>
       this.deps.postMessage(feedback.conversation, message).catch(err => {
@@ -61,6 +66,7 @@ export class ImplementationStartHandler {
         additionalContext,
         onProgress,
         { run_id: run.id, request_id: run.request_id },
+        planPath,
       );
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);

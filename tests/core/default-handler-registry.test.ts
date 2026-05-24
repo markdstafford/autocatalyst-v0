@@ -69,6 +69,9 @@ function makeDeps() {
       commit: vi.fn().mockResolvedValue(undefined),
       updateStatus: vi.fn().mockResolvedValue(undefined),
     },
+    implementationPlanner: {
+      plan: vi.fn().mockResolvedValue({ status: 'complete', plan_path: '/ws/request-001/docs/superpowers/plans/implementation-plan.md' }),
+    },
     implementer: {
       implement: vi.fn().mockResolvedValue({
         status: 'complete',
@@ -110,6 +113,7 @@ function makeDeps() {
       error: vi.fn(),
     },
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
+    validatePlanPath: vi.fn((_workspacePath: string, planPath: string) => planPath),
   };
 }
 
@@ -137,6 +141,7 @@ describe('buildDefaultHandlerRegistry', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(run.stage).toBe('reviewing_implementation');
   });
@@ -177,6 +182,34 @@ describe('buildDefaultHandlerRegistry', () => {
     expect(deps.specCommitter.commit).toHaveBeenCalled();
     expect(deps.implementer.implement).not.toHaveBeenCalled();
     expect(run.stage).toBe('done');
+  });
+
+  it('re-enters planning with human context when planning previously needed input', async () => {
+    const deps = makeDeps();
+    const registry = buildDefaultHandlerRegistry(deps);
+    const run = makeRun({ stage: 'awaiting_planning_input' });
+    const feedback = makeFeedback({ content: 'Use the adapter composition path.' });
+    const event: InboundEvent = { type: 'thread_message', payload: feedback };
+
+    const handler = registry.resolve({
+      event_type: 'thread_message',
+      stage: 'awaiting_planning_input',
+      intent: 'feedback',
+    });
+
+    expect(handler).toBeDefined();
+    await handler?.(event, run);
+
+    expect(deps.implementationPlanner.plan).toHaveBeenCalledWith(
+      '/ws/request-001/context-human/specs/typed-feature.md',
+      '/ws/request-001',
+      expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
+      'Use the adapter composition path.',
+    );
+    expect(deps.implementer.implement).toHaveBeenCalled();
+    expect(run.implementation_plan_path).toBe('/ws/request-001/docs/superpowers/plans/implementation-plan.md');
+    expect(run.stage).toBe('reviewing_implementation');
   });
 
   it('does not mutate or persist pr_open runs when handling non-actionable feedback', async () => {
@@ -344,6 +377,7 @@ describe('buildDefaultHandlerRegistry', () => {
       undefined,
       expect.any(Function),
       { run_id: 'run-001', request_id: 'request-001' },
+      '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(run.stage).toBe('reviewing_implementation');
   });
