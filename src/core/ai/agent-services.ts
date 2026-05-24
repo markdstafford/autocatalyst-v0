@@ -8,10 +8,14 @@ import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { createLogger } from '../logger.js';
 import type {
   AgentDrainSummary,
+  AgentInvocationMetadata,
+  AgentProfile,
+  AgentRoute,
   AgentRunContentBlock,
   AgentRunEvent,
   AgentRunner,
   AgentRoutingPolicy,
+  AgentServiceTelemetry,
   ArtifactAuthoringAgent,
   ArtifactComment,
   ArtifactCommentResponse,
@@ -36,6 +40,14 @@ import { artifactKindForIntent } from '../../types/artifact.js';
 import type { ArtifactCommentAnchorCodec } from '../../types/publisher.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
+
+function notifyAgentRequest(telemetry: AgentServiceTelemetry | undefined, profile: AgentProfile, route: AgentRoute): void {
+  telemetry?.onAgentRequest?.({
+    model: profile.model?.trim() || 'unknown',
+    requested_at: new Date().toISOString(),
+    route,
+  } satisfies AgentInvocationMetadata);
+}
 
 interface AgentServiceOptions {
   logDestination?: pino.DestinationStream;
@@ -64,7 +76,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent: 'idea' | 'bug' | 'chore' = 'idea',
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactCreateResult> {
     const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
     const artifactDir = (intent === 'bug' || intent === 'chore')
@@ -80,13 +92,16 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
 
     this.logger.debug({ event: 'artifact.agent_invoked', request_id: request.id }, 'Invoking agent for artifact creation');
 
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(createResultPath);
       drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
-          profile: this.routingPolicy.resolve(route),
+          profile,
           working_directory: workspace_path,
           prompt,
           telemetry: {
@@ -136,7 +151,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     workspace_path: string,
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactRevisionResult> {
     const reviseResultPath = join(workspace_path, '.autocatalyst', 'spec-revise-result.json');
     const originalAnchors = current_page_markdown && this.commentAnchorCodec
@@ -163,13 +178,16 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       'Revise called with publisher comments',
     );
 
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(reviseResultPath);
       drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
-          profile: this.routingPolicy.resolve(route),
+          profile,
           working_directory: workspace_path,
           prompt,
           telemetry: {
@@ -235,7 +253,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     working_directory: string,
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
     plan_path?: string,
   ): Promise<ImplementationResult> {
     const resultFilePath = join(working_directory, '.autocatalyst', 'impl-result.json');
@@ -247,13 +265,16 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       'Invoking agent for implementation',
     );
 
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultFilePath);
       drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
-          profile: this.routingPolicy.resolve(route),
+          profile,
           working_directory,
           prompt,
           telemetry: {
@@ -315,7 +336,7 @@ export class AgentRunnerImplementationPlanningAgent implements ImplementationPla
     artifact_path: string,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
     additional_context?: string,
   ): Promise<ImplementationPlanResult> {
     const resultFilePath = join(working_directory, '.autocatalyst', 'implementation-plan-result.json');
@@ -327,13 +348,16 @@ export class AgentRunnerImplementationPlanningAgent implements ImplementationPla
       'Invoking agent for implementation planning',
     );
 
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
     let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultFilePath);
       drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
-          profile: this.routingPolicy.resolve(route),
+          profile,
           working_directory,
           prompt,
           telemetry: {

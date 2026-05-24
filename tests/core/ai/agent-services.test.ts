@@ -983,3 +983,188 @@ describe('parseImplementationReviewResult', () => {
     expect(result.requires_human_retest).toBe(true);
   });
 });
+
+describe('AgentServiceTelemetry onAgentRequest callback', () => {
+  test('artifact.create calls onAgentRequest before drain completes with resolved model', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-callback-create-'));
+    try {
+      const events: string[] = [];
+      const callbacks: Array<{ model: string; route: { task: string } }> = [];
+      const calls: AgentRunRequest[] = [];
+
+      const runner = fakeAgentRunner(async request => {
+        events.push('runner');
+        calls.push(request);
+        const match = request.prompt.match(/write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-test.md') }), 'utf8');
+      });
+
+      const onAgentRequest = vi.fn((metadata: { model: string; route: { task: string } }) => {
+        events.push('callback');
+        callbacks.push(metadata);
+      });
+
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+      await service.create(makeRequest(), workspace, undefined, 'idea', { run_id: 'run-001', request_id: 'req-001', onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledOnce();
+      expect(callbacks[0].model).toBe('claude-sonnet-4-5');
+      expect(callbacks[0].route).toMatchObject({ task: 'artifact.create' });
+      expect(events.slice(0, 2)).toEqual(['callback', 'runner']);
+      expect(calls[0].profile?.model).toBe('claude-sonnet-4-5');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('artifact.revise calls onAgentRequest before drain completes with resolved model', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-callback-revise-'));
+    try {
+      const events: string[] = [];
+      const callbacks: Array<{ model: string; route: { task: string } }> = [];
+
+      const artifactFilePath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      await mkdir(dirname(artifactFilePath), { recursive: true });
+      await writeFile(artifactFilePath, 'original content', 'utf8');
+
+      const runner = fakeAgentRunner(async request => {
+        events.push('runner');
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(artifactFilePath, 'revised content', 'utf8');
+        await writeFile(resultPath, JSON.stringify({ comment_responses: [] }), 'utf8');
+      });
+
+      const onAgentRequest = vi.fn((metadata: { model: string; route: { task: string } }) => {
+        events.push('callback');
+        callbacks.push(metadata);
+      });
+
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+      await service.revise(makeFeedback(), [], artifactFilePath, workspace, undefined, undefined, { run_id: 'run-001', request_id: 'req-001', onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledOnce();
+      expect(callbacks[0].model).toBe('claude-sonnet-4-5');
+      expect(callbacks[0].route).toMatchObject({ task: 'artifact.revise' });
+      expect(events.slice(0, 2)).toEqual(['callback', 'runner']);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation.plan calls onAgentRequest before drain completes with resolved model', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-callback-plan-'));
+    try {
+      const events: string[] = [];
+      const callbacks: Array<{ model: string; route: { task: string } }> = [];
+      const calls: AgentRunRequest[] = [];
+
+      const specPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      const planPath = join(workspace, 'docs', 'superpowers', 'plans', '2026-05-24-feature-test.md');
+      await mkdir(dirname(specPath), { recursive: true });
+      await writeFile(specPath, '# Feature', 'utf8');
+
+      const runner = fakeAgentRunner(async request => {
+        events.push('runner');
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await mkdir(dirname(planPath), { recursive: true });
+        await writeFile(planPath, '# Plan', 'utf8');
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', plan_path: planPath }), 'utf8');
+      });
+
+      const onAgentRequest = vi.fn((metadata: { model: string; route: { task: string } }) => {
+        events.push('callback');
+        callbacks.push(metadata);
+      });
+
+      const service = new AgentRunnerImplementationPlanningAgent(runner, makePolicy());
+      await service.plan(specPath, workspace, undefined, { run_id: 'run-001', request_id: 'req-001', onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledOnce();
+      expect(callbacks[0].model).toBe('claude-sonnet-4-5');
+      expect(callbacks[0].route).toMatchObject({ task: 'implementation.plan' });
+      expect(events.slice(0, 2)).toEqual(['callback', 'runner']);
+      expect(calls[0].profile?.model).toBe('claude-sonnet-4-5');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation.run calls onAgentRequest before drain completes with resolved model', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-callback-impl-'));
+    try {
+      const events: string[] = [];
+      const callbacks: Array<{ model: string; route: { task: string } }> = [];
+      const calls: AgentRunRequest[] = [];
+
+      const specPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      await mkdir(dirname(specPath), { recursive: true });
+      await writeFile(specPath, '# Feature', 'utf8');
+
+      const runner = fakeAgentRunner(async request => {
+        events.push('runner');
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'done' }), 'utf8');
+      });
+
+      const onAgentRequest = vi.fn((metadata: { model: string; route: { task: string } }) => {
+        events.push('callback');
+        callbacks.push(metadata);
+      });
+
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+      await service.implement(specPath, workspace, undefined, undefined, { run_id: 'run-001', request_id: 'req-001', onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledOnce();
+      expect(callbacks[0].model).toBe('claude-sonnet-4-5');
+      expect(callbacks[0].route).toMatchObject({ task: 'implementation.run' });
+      expect(events.slice(0, 2)).toEqual(['callback', 'runner']);
+      expect(calls[0].profile?.model).toBe('claude-sonnet-4-5');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('missing profile.model is reported as unknown', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-callback-unknown-'));
+    try {
+      const callbacks: Array<{ model: string }> = [];
+
+      const policyWithoutModel = new DefaultAgentRoutingPolicy({
+        credentials: [{ name: 'api-key', type: 'api_key', value: 'test-key' }],
+        endpoints: [{ name: 'agent-ep', protocol: 'anthropic', credential: 'api-key' }],
+        profiles: [{ name: 'agent', endpoint: 'agent-ep', runner: 'claude_agent_sdk' }],
+        routing: { 'artifact.create': 'agent', 'artifact.revise': 'agent', 'implementation.plan': 'agent', 'implementation.run': 'agent', 'question.answer': 'agent', 'issue.triage': 'agent' },
+      });
+
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-test.md') }), 'utf8');
+      });
+
+      const onAgentRequest = vi.fn((metadata: { model: string }) => { callbacks.push(metadata); });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, policyWithoutModel);
+      await service.create(makeRequest(), workspace, undefined, 'idea', { onAgentRequest });
+
+      expect(callbacks[0].model).toBe('unknown');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});

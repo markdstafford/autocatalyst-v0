@@ -213,7 +213,7 @@ export interface ArtifactAuthoringAgent {
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent?: 'idea' | 'bug' | 'chore',
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactCreateResult>;
   revise(
     feedback: ThreadMessage,
@@ -222,7 +222,7 @@ export interface ArtifactAuthoringAgent {
     workspace_path: string,
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactRevisionResult>;
 }
 
@@ -240,7 +240,7 @@ export interface ImplementationPlanningAgent {
     artifact_path: string,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
     additional_context?: string,
   ): Promise<ImplementationPlanResult>;
 }
@@ -267,7 +267,7 @@ export interface ImplementationAgent {
     working_directory: string,
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
     plan_path?: string,
   ): Promise<ImplementationResult>;
 }
