@@ -165,6 +165,8 @@ describe('Anthropic beta header filter proxy', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: 'claude-3', messages: [] }),
       });
+      // Give the server-side async dump write time to complete before closing
+      await new Promise(r => setTimeout(r, 50));
       await proxy.close();
 
       const files = readdirSync(logDir).sort();

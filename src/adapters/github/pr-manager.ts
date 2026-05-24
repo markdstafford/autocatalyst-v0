@@ -1,6 +1,7 @@
 import { promisify } from 'node:util';
 import { execFile as _execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { isAbsolute, relative, sep } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { PRManager, PRManagerOptions } from '../../types/issue-tracker.js';
@@ -56,22 +57,62 @@ function derivePrTitle(runIntent: RequestIntent | undefined, specTitle: string):
   return `feat: ${lowerTitle}`;
 }
 
-function buildPrBody(specPath: string, issueNumber: number | null, options?: PRManagerOptions): string {
-  const summary = options?.impl_result?.summary ?? 'No implementation summary provided.';
-  const testingInstructions = options?.impl_result?.testing_instructions ?? 'No testing instructions provided.';
+function nonEmptyStrings(values: string[] | undefined): string[] {
+  return values?.map(value => value.trim()).filter(Boolean) ?? [];
+}
 
-  const lines: string[] = [
-    summary,
-    '',
-    '## Testing',
-    '',
-    testingInstructions,
-    '',
-    '---',
-    `Spec: \`${specPath}\``,
-  ];
+function specFooterLines(workspacePath: string, specPath: string): string[] {
+  if (!workspacePath || !specPath) return [];
+
+  const relativeSpecPath = relative(workspacePath, specPath);
+  const isOutsideWorkspace = relativeSpecPath === '..'
+    || relativeSpecPath.startsWith(`..${sep}`)
+    || isAbsolute(relativeSpecPath);
+  if (!relativeSpecPath || isOutsideWorkspace) return [];
+
+  const repositoryRelativePath = relativeSpecPath.split(sep).join('/');
+  if (repositoryRelativePath.startsWith('.autocatalyst/triage/')) return [];
+
+  return ['---', `Spec: \`${repositoryRelativePath}\``];
+}
+
+function buildPrBody(
+  workspacePath: string,
+  specPath: string,
+  issueNumber: number | null,
+  options?: PRManagerOptions,
+): string {
+  const implResult = options?.impl_result;
+  const changes = nonEmptyStrings(implResult?.review_summary?.changes);
+  const confirmations = nonEmptyStrings(implResult?.review_summary?.confirm);
+  const testingSteps = nonEmptyStrings(implResult?.testing_steps);
+  const legacySummary = implResult?.summary?.trim() || 'No implementation summary provided.';
+  const legacyTestingInstructions = implResult?.testing_instructions?.trim() || 'No testing instructions provided.';
+
+  const lines: string[] = ['## Summary', ''];
+  if (changes.length > 0) {
+    lines.push(...changes.map(change => `- ${change}`));
+  } else {
+    lines.push(legacySummary);
+  }
+
+  if (confirmations.length > 0) {
+    lines.push('', '## Verify', '', ...confirmations.map(item => `- [ ] ${item}`));
+  }
+
+  if (testingSteps.length > 0) {
+    lines.push('', '## Test steps', '', ...testingSteps.map((step, index) => `${index + 1}. ${step}`));
+  } else {
+    lines.push('', '## Testing', '', legacyTestingInstructions);
+  }
+
+  const footer = specFooterLines(workspacePath, specPath);
+  if (footer.length > 0) {
+    lines.push('', ...footer);
+  }
 
   if (issueNumber !== null && issueNumber > 0) {
+    if (footer.length === 0) lines.push('');
     lines.push(`Closes #${issueNumber}`);
   }
 
@@ -104,7 +145,7 @@ export class GHPRManager implements PRManager {
       ? issueFromOptions
       : (issueFromFrontmatter !== null && !isNaN(issueFromFrontmatter) ? issueFromFrontmatter : null);
 
-    const prBody = buildPrBody(spec_path, issueForBody, options);
+    const prBody = buildPrBody(workspace_path, spec_path, issueForBody, options);
 
     // Push the branch
     try {

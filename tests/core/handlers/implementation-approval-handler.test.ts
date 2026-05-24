@@ -42,6 +42,11 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     last_impl_result: {
       summary: 'Implemented it.',
       testing_instructions: 'npm test',
+      review_summary: {
+        changes: ['Added approval path data', 'Kept PR body fields'],
+        confirm: ['Approval creates PR', 'PR body has review checklist'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm test'],
     },
     channel: TEST_CHANNEL,
     conversation: TEST_CONVERSATION,
@@ -150,7 +155,15 @@ describe('ImplementationApprovalHandler', () => {
       'spec/request-001',
       '/ws/request-001/context-human/specs/feature-test.md',
       {
-        impl_result: { summary: 'Implemented it.', testing_instructions: 'npm test' },
+        impl_result: {
+          summary: 'Implemented it.',
+          testing_instructions: 'npm test',
+          review_summary: {
+            changes: ['Added approval path data', 'Kept PR body fields'],
+            confirm: ['Approval creates PR', 'PR body has review checklist'],
+          },
+          testing_steps: ['cd /ws/request-001', 'npm test'],
+        },
         run_intent: 'idea',
         title: 'generated title',
       },
@@ -444,5 +457,59 @@ describe('ImplementationApprovalHandler with reviewCoordinator', () => {
     const { handler, deps } = makeHandler({ reviewCoordinator: undefined });
     const result = await handler.handle(makeRun(), makeFeedback());
     expect(result).toEqual({ status: 'pr_open' });
+  });
+
+  it('passes structured implementation result fields into final review', async () => {
+    const coord = makeReviewCoordinator();
+    const { handler } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(coord.runFinalReview).toHaveBeenCalledWith(expect.objectContaining({
+      implementation_result: {
+        status: 'complete',
+        summary: 'Implemented it.',
+        testing_instructions: 'npm test',
+        review_summary: {
+          changes: ['Added approval path data', 'Kept PR body fields'],
+          confirm: ['Approval creates PR', 'PR body has review checklist'],
+        },
+        testing_steps: ['cd /ws/request-001', 'npm test'],
+      },
+    }));
+  });
+
+  it('stores structured fields returned by final review before creating the PR', async () => {
+    const coord = makeReviewCoordinator({
+      summary: 'Final reviewed summary.',
+      testing_instructions: 'Final reviewed tests.',
+      review_summary: {
+        changes: ['Final review kept summary bullets', 'Final review kept verification items'],
+        confirm: ['Summary bullets render', 'Verification checklist renders'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm test -- implementation-approval-handler'],
+    });
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    const expectedImplResult = {
+      summary: 'Final reviewed summary.',
+      testing_instructions: 'Final reviewed tests.',
+      review_summary: {
+        changes: ['Final review kept summary bullets', 'Final review kept verification items'],
+        confirm: ['Summary bullets render', 'Verification checklist renders'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm test -- implementation-approval-handler'],
+    };
+    expect(run.last_impl_result).toEqual(expectedImplResult);
+    expect(deps.prManager.createPR).toHaveBeenCalledWith(
+      '/ws/request-001',
+      'spec/request-001',
+      '/ws/request-001/context-human/specs/feature-test.md',
+      expect.objectContaining({ impl_result: expectedImplResult }),
+    );
   });
 });

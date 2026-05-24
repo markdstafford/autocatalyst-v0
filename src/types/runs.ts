@@ -32,9 +32,16 @@ export const VALID_RUN_STAGES: RunStage[] = [
 
 export type RequestIntent = 'idea' | 'bug' | 'chore' | 'file_issues' | 'question';
 
+export interface ImplementationReviewSummary {
+  changes: string[];
+  confirm: string[];
+}
+
 export interface LastImplementationResult {
   summary: string;
   testing_instructions: string;
+  review_summary?: ImplementationReviewSummary;
+  testing_steps?: string[];
 }
 
 export interface Run {

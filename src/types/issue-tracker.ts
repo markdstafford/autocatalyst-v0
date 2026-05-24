@@ -1,4 +1,4 @@
-import type { RequestIntent } from './runs.js';
+import type { LastImplementationResult, RequestIntent } from './runs.js';
 
 export interface TrackedIssue {
   number: number;
@@ -16,10 +16,7 @@ export interface IssueManager {
 }
 
 export interface PRManagerOptions {
-  impl_result?: {
-    summary: string;
-    testing_instructions: string;
-  };
+  impl_result?: LastImplementationResult;
   run_intent?: RequestIntent;
   issue_number?: number;
   title?: string;
