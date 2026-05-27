@@ -64,6 +64,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof IssueFiling
     postMessage: vi.fn().mockResolvedValue(undefined),
     transition: vi.fn((run: Run, stage: Run['stage']) => { run.stage = stage; }),
     failRun: vi.fn().mockResolvedValue(undefined),
+    persist: vi.fn(),
     reactToRunMessage: vi.fn().mockResolvedValue(undefined),
     reacjiComplete: 'white_check_mark',
     logger: {
@@ -89,7 +90,7 @@ describe('IssueFilingHandler', () => {
     expect(deps.workspaceManager.create).toHaveBeenCalledWith('request-001', 'https://example.test/org/repo.git', '/tmp/workspaces');
     expect(run.workspace_path).toBe('/ws/request-001');
     expect(run.branch).toBe('file/request-001');
-    expect(deps.issueFiler.file).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), { run_id: 'run-001', request_id: 'request-001' });
+    expect(deps.issueFiler.file).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }));
     expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
     expect(deps.postMessage).toHaveBeenCalledWith(TEST_CONVERSATION, 'Filed 1 new issue: #10 New issue');
     expect(deps.logger.info).toHaveBeenCalledWith(
@@ -155,6 +156,27 @@ describe('IssueFilingHandler', () => {
     expect(result).toEqual({ status: 'failed' });
     expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
     expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, expect.any(Error));
+  });
+
+  it('passes onAgentRequest to issueFiler.file() and updates run metadata when callback fires', async () => {
+    let capturedOnAgentRequest: ((metadata: { model: string; requested_at: string; route: { task: string } }) => void) | undefined;
+    const { handler, deps } = makeHandler({
+      issueFiler: {
+        file: vi.fn().mockImplementation(async (_req, _ws, _progress, telemetry: { onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void }) => {
+          capturedOnAgentRequest = telemetry?.onAgentRequest;
+          return { status: 'complete', summary: 'Filed 1 issue', filed_issues: [] };
+        }),
+      },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeRequest());
+
+    expect(capturedOnAgentRequest).toBeDefined();
+    capturedOnAgentRequest?.({ model: 'claude-sonnet-4-6', requested_at: '2026-01-03T00:00:00.000Z', route: { task: 'issue.triage' } });
+    expect(run.current_model).toBe('claude-sonnet-4-6');
+    expect(run.last_agent_request_at).toBe('2026-01-03T00:00:00.000Z');
+    expect(deps.persist).toHaveBeenCalled();
   });
 
   it('continues to done when workspace cleanup, summary notification, or completion reaction fail', async () => {

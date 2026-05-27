@@ -52,6 +52,103 @@ describe('run.status handler', () => {
     expect(msg).toContain('idea');
   });
 
+  it('includes workspace immediately after run ID when workspace is allocated', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-24T01:12:00.000Z'));
+    try {
+      const runs = new Map<string, Run>();
+      runs.set('req-001', makeRun({ id: 'run-001', request_id: 'req-001', stage: 'intake', workspace_path: '/ws/req-001', updated_at: '2026-05-24T01:11:52.000Z' }));
+      const handler = makeRunStatusHandler(runs);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await handler(makeEvent({ inferred_context: { request_id: 'req-001' } }), reply);
+
+      expect(reply.mock.calls[0][0]).toBe([
+        '*Run:* `run-001`',
+        '*Workspace:* `/ws/req-001`',
+        '*Intent:* `idea`',
+        '*Stage:* `intake`',
+        '*Time in stage:* 8s',
+      ].join('\n'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows not yet allocated for empty or whitespace workspace paths', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001', workspace_path: '   ', stage: 'intake' }));
+    const handler = makeRunStatusHandler(runs);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ inferred_context: { request_id: 'req-001' } }), reply);
+
+    const msg = reply.mock.calls[0][0] as string;
+    expect(msg).toContain('*Workspace:* not yet allocated');
+    expect(msg).not.toContain('*Workspace:* ``');
+  });
+
+  it('shows model and relative last request for AI-active stages with metadata', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-24T01:12:00.000Z'));
+    try {
+      const runs = new Map<string, Run>();
+      runs.set('req-001', makeRun({
+        id: 'run-001',
+        request_id: 'req-001',
+        stage: 'implementing',
+        workspace_path: '/ws/req-001',
+        current_model: 'claude-sonnet-4-5',
+        last_agent_request_at: '2026-05-24T01:09:00.000Z',
+        updated_at: '2026-05-24T01:00:48.000Z',
+      }));
+      const handler = makeRunStatusHandler(runs);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await handler(makeEvent({ inferred_context: { request_id: 'req-001' } }), reply);
+
+      expect(reply.mock.calls[0][0]).toBe([
+        '*Run:* `run-001`',
+        '*Workspace:* `/ws/req-001`',
+        '*Intent:* `idea`',
+        '*Stage:* `implementing`',
+        '*Time in stage:* 11m',
+        '*Model:* `claude-sonnet-4-5`',
+        '*Last request:* 3m ago',
+      ].join('\n'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows AI placeholders during AI-active stages before metadata is recorded', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001', stage: 'planning' }));
+    const handler = makeRunStatusHandler(runs);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ inferred_context: { request_id: 'req-001' } }), reply);
+
+    const msg = reply.mock.calls[0][0] as string;
+    expect(msg).toContain('*Model:* not yet requested');
+    expect(msg).toContain('*Last request:* not yet requested');
+  });
+
+  it('omits stale AI metadata for waiting and terminal stages', async () => {
+    for (const stage of ['awaiting_impl_input', 'awaiting_planning_input', 'done', 'failed'] as const) {
+      const runs = new Map<string, Run>();
+      runs.set('req-001', makeRun({ request_id: 'req-001', stage, current_model: 'claude-sonnet-4-5', last_agent_request_at: '2026-05-24T01:09:00.000Z' }));
+      const handler = makeRunStatusHandler(runs);
+      const reply = vi.fn().mockResolvedValue(undefined);
+
+      await handler(makeEvent({ inferred_context: { request_id: 'req-001' } }), reply);
+
+      const msg = reply.mock.calls[0][0] as string;
+      expect(msg).not.toContain('*Model:*');
+      expect(msg).not.toContain('*Last request:*');
+    }
+  });
+
   it('with explicit request_id as first arg → looks up by request_id; replies correctly', async () => {
     const runs = new Map<string, Run>();
     runs.set('req-001', makeRun({ request_id: 'req-001', stage: 'implementing' }));

@@ -459,6 +459,30 @@ describe('ImplementationApprovalHandler with reviewCoordinator', () => {
     expect(result).toEqual({ status: 'pr_open' });
   });
 
+  it('onAgentRequest callback passed to runFinalReview updates run fields and persists', async () => {
+    let capturedOnAgentRequest: ((metadata: { model: string; requested_at: string; route: { task: string } }) => void) | undefined;
+    const coord = {
+      runFinalReview: vi.fn().mockImplementation(async (params: { onAgentRequest?: (metadata: { model: string; requested_at: string; route: { task: string } }) => void }) => {
+        capturedOnAgentRequest = params.onAgentRequest;
+        return { status: 'complete', summary: 'Done.', requires_human_retest: false, testing_steps: ['npm test'], review_summary: { changes: ['A'], confirm: ['B'] } };
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    capturedOnAgentRequest?.({ model: 'claude-opus-4-5', requested_at: '2026-01-01T00:00:00.000Z', route: { task: 'some.task' } });
+
+    expect(run.current_model).toBe('claude-opus-4-5');
+    expect(run.last_agent_request_at).toBe('2026-01-01T00:00:00.000Z');
+    expect(deps.persist).toHaveBeenCalled();
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'run.agent_request_recorded', run_id: 'run-001' }),
+      expect.any(String),
+    );
+  });
+
   it('passes structured implementation result fields into final review', async () => {
     const coord = makeReviewCoordinator();
     const { handler } = makeHandler({ reviewCoordinator: coord });

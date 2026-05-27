@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
 import type {
+  AgentInvocationMetadata,
   AgentRunner,
   AgentRoutingPolicy,
   ImplementationAgent,
@@ -49,6 +50,7 @@ export interface ReviewRunParams {
   implementation_result: ImplementationResult;
   working_directory: string;
   onProgress?: (message: string) => Promise<void>;
+  onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
 }
 
 export class ImplementationReviewCoordinator {
@@ -69,7 +71,7 @@ export class ImplementationReviewCoordinator {
   private async runReview(
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
-    { run, artifact_path, implementation_result, working_directory, onProgress }: ReviewRunParams,
+    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest }: ReviewRunParams,
   ): Promise<ImplementationResult> {
     // Resolve review profile — fall back to initial when final is absent
     let reviewProfile = this.deps.routingPolicy.resolveOptional({ task: routeTask });
@@ -125,6 +127,27 @@ export class ImplementationReviewCoordinator {
     let reviewResultContent: string;
     let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
     try {
+      if (onAgentRequest && reviewProfile) {
+        onAgentRequest({
+          model: reviewProfile.model?.trim() || 'unknown',
+          requested_at: new Date().toISOString(),
+          route: { task: routeTask },
+        });
+      }
+
+      const progressWithHeartbeat: typeof onProgress =
+        onProgress && onAgentRequest && reviewProfile
+          ? async (msg: string) => {
+              onAgentRequest({
+                model: reviewProfile.model?.trim() || 'unknown',
+                requested_at: new Date().toISOString(),
+                route: { task: routeTask },
+                is_heartbeat: true,
+              });
+              return onProgress(msg);
+            }
+          : onProgress;
+
       await drainAgentRunner(
         this.deps.runner.run({
           route: { task: routeTask },
@@ -139,7 +162,7 @@ export class ImplementationReviewCoordinator {
             handler: 'ImplementationReviewCoordinator',
           },
         }),
-        onProgress,
+        progressWithHeartbeat,
         this.deps.logger,
         `implementation_review_${phase}`,
         { run_id: run.id, request_id: run.request_id },
@@ -233,7 +256,7 @@ export class ImplementationReviewCoordinator {
         working_directory,
         responsePrompt,
         progressFn,
-        { run_id: run.id },
+        { run_id: run.id, onAgentRequest },
       );
     } catch (err) {
       return { status: 'failed', error: `Implementer response to review failed: ${String(err)}` };

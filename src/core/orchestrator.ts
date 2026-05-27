@@ -28,6 +28,7 @@ import type { HandlerRegistry } from './handler-registry.js';
 import { buildDefaultHandlerRegistry as buildDefaultHandlers } from './default-handler-registry.js';
 import type { BranchGuard } from './git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from './ai/implementation-review-coordinator.js';
+import { clearAgentRequestContext, isAiActiveStage } from './run-ai-context.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
@@ -584,6 +585,9 @@ export class OrchestratorImpl implements Orchestrator {
     this._stageStartTimes.set(run.id, endMs);
 
     run.stage = stage;
+    if (!isAiActiveStage(stage)) {
+      clearAgentRequestContext(run);
+    }
     run.updated_at = new Date().toISOString();
     this.logger.info({ event: 'run.stage_transition', run_id: run.id, request_id: run.request_id, from_stage: from, to_stage: stage }, 'Stage transition');
     this._appendRunLog(run.request_id, `[${new Date().toISOString()}] Stage: ${from} → ${stage}`);
@@ -726,6 +730,9 @@ export class OrchestratorImpl implements Orchestrator {
     const run = this.runs.get(requestId);
     if (!run) return 'not_found';
     run.stage = stage;
+    if (!isAiActiveStage(stage)) {
+      clearAgentRequestContext(run);
+    }
     run.updated_at = new Date().toISOString();
     this._persistRuns();
     this.logger.info(

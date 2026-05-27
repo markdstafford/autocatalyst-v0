@@ -140,7 +140,7 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
       '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(run.stage).toBe('reviewing_implementation');
@@ -204,7 +204,7 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001/context-human/specs/typed-feature.md',
       '/ws/request-001',
       expect.any(Function),
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
       'Use the adapter composition path.',
     );
     expect(deps.implementer.implement).toHaveBeenCalled();
@@ -376,7 +376,7 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
       '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(run.stage).toBe('reviewing_implementation');

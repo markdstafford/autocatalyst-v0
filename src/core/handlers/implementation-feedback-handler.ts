@@ -7,6 +7,7 @@ import type { ConversationRef } from '../../types/channel.js';
 import { artifactPath } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
+import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 export interface ImplementationFeedbackDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -50,6 +51,8 @@ export class ImplementationFeedbackHandler {
     run.attempt += 1;
     this.deps.persist();
 
+    const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
+
     let result;
     try {
       result = await this.deps.implementer.implement(
@@ -57,7 +60,7 @@ export class ImplementationFeedbackHandler {
         run.workspace_path,
         additionalContext.value,
         onProgress,
-        { run_id: run.id, request_id: run.request_id },
+        { run_id: run.id, request_id: run.request_id, onAgentRequest },
       );
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
@@ -83,6 +86,7 @@ export class ImplementationFeedbackHandler {
         implementation_result: result,
         working_directory: run.workspace_path,
         onProgress,
+        onAgentRequest,
       });
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');

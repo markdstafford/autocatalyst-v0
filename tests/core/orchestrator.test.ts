@@ -434,7 +434,7 @@ describe('Orchestrator — new_request happy path', () => {
     await orch.stop();
 
     expect(wm.create).toHaveBeenCalledWith('request-001', 'https://github.com/org/repo.git', '~/.autocatalyst/workspaces');
-    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), undefined, { run_id: expect.any(String), request_id: 'request-001' });
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), undefined, expect.objectContaining({ run_id: expect.any(String), request_id: 'request-001' }));
     expect(cp.createArtifact).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'slack', channel_id: 'C123', conversation_id: '100.0' }),
       expect.objectContaining({ kind: 'feature_spec', local_path: '/ws/request-001/context-human/specs/feature-test.md' }),
@@ -571,7 +571,7 @@ describe('Orchestrator — feedback happy path', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
-      { run_id: expect.any(String), request_id: 'request-001' },
+      expect.objectContaining({ run_id: expect.any(String), request_id: 'request-001' }),
     );
     expect(cp.updateArtifact).toHaveBeenCalledWith(
       'CANVAS001',
@@ -809,7 +809,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       undefined,
       expect.any(Function),
-      { run_id: expect.any(String), request_id: 'request-001' },
+      expect.objectContaining({ run_id: expect.any(String), request_id: 'request-001' }),
     );
     expect(fs.reply).toHaveBeenCalledTimes(2);
     expect(fs.reply).toHaveBeenCalledWith('CANVAS001', 'disc-1', 'Updated per Phoebe');
@@ -839,7 +839,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       undefined,
       expect.any(Function),
-      { run_id: expect.any(String), request_id: 'request-001' },
+      expect.objectContaining({ run_id: expect.any(String), request_id: 'request-001' }),
     );
     expect(fs.reply).not.toHaveBeenCalled();
   });
@@ -866,7 +866,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       undefined,
       expect.any(Function),
-      { run_id: expect.any(String), request_id: 'request-001' },
+      expect.objectContaining({ run_id: expect.any(String), request_id: 'request-001' }),
     );
   });
 
@@ -1470,7 +1470,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
-      { run_id: 'run-001', request_id: 'request-001' },
+      expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
       '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
   });
@@ -4828,7 +4828,7 @@ describe('Orchestrator — bug and chore routing', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug', { run_id: expect.any(String), request_id: 'request-001' });
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug', expect.objectContaining({ run_id: expect.any(String), request_id: 'request-001' }));
   });
 
   it('chore routing: artifactAuthoringAgent.create called with intent=chore', async () => {
@@ -4845,7 +4845,7 @@ describe('Orchestrator — bug and chore routing', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'chore', { run_id: expect.any(String), request_id: 'request-001' });
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'chore', expect.objectContaining({ run_id: expect.any(String), request_id: 'request-001' }));
   });
 });
 
@@ -6491,5 +6491,75 @@ describe('OrchestratorImpl — work_on_issue two-stage classification', () => {
     });
     const runs = [...orch.getRuns().values()];
     expect(runs[0].intent).toBe('idea');
+  });
+});
+
+describe('Orchestrator — AI context clearing on stage transition', () => {
+  function makeMinimalOrch() {
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+        artifactPublisher: makeArtifactPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        channelRepoMap: makeChannelRepoMap(),
+        intentClassifier: makeIntentClassifier('feedback'),
+      },
+      { logDestination: nullDest },
+    );
+    return { orch, adapter };
+  }
+
+  it('clears current_model and last_agent_request_at when transitioning to a non-AI-active stage', async () => {
+    const { orch } = makeMinimalOrch();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    const run = makeRun({ stage: 'implementing', current_model: 'claude-opus-4-5', last_agent_request_at: '2026-01-01T00:00:00.000Z' });
+    runs.set('request-001', run);
+
+    const transition = (orch as unknown as { transition: (run: Run, stage: Run['stage']) => void }).transition.bind(orch);
+    transition(run, 'pr_open');
+
+    expect(run.current_model).toBeUndefined();
+    expect(run.last_agent_request_at).toBeUndefined();
+  });
+
+  it('preserves current_model and last_agent_request_at when transitioning to an AI-active stage', async () => {
+    const { orch } = makeMinimalOrch();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    const run = makeRun({ stage: 'speccing', current_model: 'claude-opus-4-5', last_agent_request_at: '2026-01-01T00:00:00.000Z' });
+    runs.set('request-001', run);
+
+    const transition = (orch as unknown as { transition: (run: Run, stage: Run['stage']) => void }).transition.bind(orch);
+    transition(run, 'implementing');
+
+    expect(run.current_model).toBe('claude-opus-4-5');
+    expect(run.last_agent_request_at).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('overrideRunStage clears context when transitioning to a non-AI-active stage', () => {
+    const { orch } = makeMinimalOrch();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    const run = makeRun({ stage: 'implementing', current_model: 'claude-opus-4-5', last_agent_request_at: '2026-01-01T00:00:00.000Z' });
+    runs.set('request-001', run);
+
+    orch.overrideRunStage('request-001', 'pr_open');
+
+    expect(run.current_model).toBeUndefined();
+    expect(run.last_agent_request_at).toBeUndefined();
+  });
+
+  it('overrideRunStage preserves context when transitioning to an AI-active stage', () => {
+    const { orch } = makeMinimalOrch();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    const run = makeRun({ stage: 'speccing', current_model: 'claude-opus-4-5', last_agent_request_at: '2026-01-01T00:00:00.000Z' });
+    runs.set('request-001', run);
+
+    orch.overrideRunStage('request-001', 'implementing');
+
+    expect(run.current_model).toBe('claude-opus-4-5');
+    expect(run.last_agent_request_at).toBe('2026-01-01T00:00:00.000Z');
   });
 });

@@ -227,6 +227,7 @@ async function handleArtifactFeedback(
     postMessage: deps.postMessage,
     transition: deps.transition,
     failRun: deps.failRun,
+    persist: deps.persist,
     logger: deps.logger,
     branchGuard,
   });
@@ -341,6 +342,7 @@ async function startFilingPipeline(deps: DefaultHandlerRegistryDeps, run: Run, r
     postMessage: deps.postMessage,
     transition: deps.transition,
     failRun: deps.failRun,
+    persist: deps.persist,
     reactToRunMessage: deps.reactToRunMessage,
     reacjiComplete: deps.reacjiComplete,
     logger: deps.logger,
@@ -358,6 +360,7 @@ async function handleQuestion(
     questionAnswerer: deps.questionAnswerer,
     postMessage: deps.postMessage,
     postError: deps.postError,
+    persist: deps.persist,
     logger: deps.logger,
   });
   return handler.handle(content, conversation, run);

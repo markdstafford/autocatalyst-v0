@@ -23,6 +23,19 @@ export interface AgentRoute {
   artifact_kind?: ArtifactKind;
 }
 
+export interface AgentInvocationMetadata {
+  model: string;
+  requested_at: string;
+  route: AgentRoute;
+  is_heartbeat?: boolean;
+}
+
+export interface AgentServiceTelemetry {
+  run_id?: string;
+  request_id?: string;
+  onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
+}
+
 export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
 export type AgentSettingSource = 'user' | 'project' | 'local';
 
@@ -201,7 +214,7 @@ export interface ArtifactAuthoringAgent {
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent?: 'idea' | 'bug' | 'chore',
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactCreateResult>;
   revise(
     feedback: ThreadMessage,
@@ -210,7 +223,7 @@ export interface ArtifactAuthoringAgent {
     workspace_path: string,
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactRevisionResult>;
 }
 
@@ -228,7 +241,7 @@ export interface ImplementationPlanningAgent {
     artifact_path: string,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
     additional_context?: string,
   ): Promise<ImplementationPlanResult>;
 }
@@ -255,13 +268,13 @@ export interface ImplementationAgent {
     working_directory: string,
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
     plan_path?: string,
   ): Promise<ImplementationResult>;
 }
 
 export interface QuestionAnsweringAgent {
-  answer(question: string, telemetry?: { run_id?: string; request_id?: string }): Promise<string>;
+  answer(question: string, telemetry?: AgentServiceTelemetry): Promise<string>;
 }
 
 export interface IssueTriageAgent {
@@ -269,7 +282,7 @@ export interface IssueTriageAgent {
     request: Request,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
-    telemetry?: { run_id?: string; request_id?: string },
+    telemetry?: AgentServiceTelemetry,
   ): Promise<IssueTriageResult>;
 }
 

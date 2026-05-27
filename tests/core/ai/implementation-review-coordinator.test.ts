@@ -287,6 +287,34 @@ describe('ImplementationReviewCoordinator', () => {
     });
   });
 
+  describe('onAgentRequest callback', () => {
+    it('calls onAgentRequest with model, requested_at, and route when review profile is resolved', async () => {
+      const deps = makeDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const onAgentRequest = vi.fn();
+
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onAgentRequest });
+
+      expect(onAgentRequest).toHaveBeenCalledWith(expect.objectContaining({
+        model: expect.any(String),
+        requested_at: expect.any(String),
+        route: expect.objectContaining({ task: 'implementation.review.initial' }),
+      }));
+    });
+
+    it('does not call onAgentRequest when no review profile is configured', async () => {
+      const deps = makeDeps({} as never, { routingPolicy: makeRoutingPolicy(null, null) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const onAgentRequest = vi.fn();
+
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onAgentRequest });
+
+      expect(onAgentRequest).not.toHaveBeenCalled();
+    });
+  });
+
   describe('review round telemetry', () => {
     it('logs implementation.review.round_started and round_completed', async () => {
       const deps = makeDeps();
@@ -343,6 +371,63 @@ describe('ImplementationReviewCoordinator', () => {
       expect(completed!['blocker_count']).toBe(1);
       expect(completed!['warning_count']).toBe(2);
       expect(completed!['info_count']).toBe(1);
+    });
+  });
+
+  describe('runInitialReview — heartbeat callbacks', () => {
+    it('fires onAgentRequest with is_heartbeat: true on relay progress events', async () => {
+      const relayRunner: AgentRunner = {
+        run: vi.fn().mockReturnValue((async function* () {
+          yield { type: 'assistant', content: [{ type: 'text', text: '[Relay] reviewing now' }] };
+        })()),
+      };
+      const deps = makeDeps(undefined, { runner: relayRunner });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const callbacks: Array<{ is_heartbeat?: boolean }> = [];
+      const onAgentRequest = vi.fn((metadata: { is_heartbeat?: boolean }) => callbacks.push(metadata));
+      const onProgress = vi.fn();
+
+      await coordinator.runInitialReview({
+        run,
+        artifact_path: '/ws/spec.md',
+        implementation_result: makeCompleteResult(),
+        working_directory: WORKING_DIR,
+        onProgress,
+        onAgentRequest,
+      });
+
+      // Initial call (not heartbeat) + one heartbeat per relay event
+      expect(callbacks.length).toBeGreaterThanOrEqual(2);
+      expect(callbacks[0].is_heartbeat).toBeFalsy();
+      expect(callbacks.slice(1).every(c => c.is_heartbeat === true)).toBe(true);
+      expect(onProgress).toHaveBeenCalled();
+    });
+
+    it('no heartbeat callbacks when onProgress is absent', async () => {
+      const relayRunner: AgentRunner = {
+        run: vi.fn().mockReturnValue((async function* () {
+          yield { type: 'assistant', content: [{ type: 'text', text: '[Relay] reviewing now' }] };
+        })()),
+      };
+      const deps = makeDeps(undefined, { runner: relayRunner });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const callbacks: Array<{ is_heartbeat?: boolean }> = [];
+      const onAgentRequest = vi.fn((metadata: { is_heartbeat?: boolean }) => callbacks.push(metadata));
+
+      await coordinator.runInitialReview({
+        run,
+        artifact_path: '/ws/spec.md',
+        implementation_result: makeCompleteResult(),
+        working_directory: WORKING_DIR,
+        onAgentRequest,
+        // onProgress intentionally absent
+      });
+
+      // Only the initial call, no heartbeat
+      expect(callbacks).toHaveLength(1);
+      expect(callbacks[0].is_heartbeat).toBeFalsy();
     });
   });
 });
