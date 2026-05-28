@@ -1,7 +1,7 @@
 import { run as _run, OpenAIResponsesModel, setTracingDisabled, type Agent } from '@openai/agents';
 import { SandboxAgent, type Capability, filesystem, shell, compaction } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient, type UnixLocalSandboxSessionState } from '@openai/agents/sandbox/local';
-import { Manifest } from '@openai/agents/sandbox';
+import { Manifest, NoopSnapshotSpec } from '@openai/agents/sandbox';
 import OpenAI from 'openai';
 import type pino from 'pino';
 import type { LoggerProvider } from '@opentelemetry/api-logs';
@@ -27,6 +27,10 @@ type RunFn = (
   workingDirectory: string,
   options: RunFnOptions,
 ) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>;
+
+type NoopSnapshotSessionState = UnixLocalSandboxSessionState & {
+  snapshotSpec: NoopSnapshotSpec;
+};
 
 export interface OpenAIAgentSdkAgentRunnerOptions {
   runFn?: RunFn;
@@ -299,12 +303,14 @@ async function* defaultRunFn(
   workingDirectory: string,
   options: RunFnOptions,
 ): AsyncIterable<unknown> {
-  const client = new UnixLocalSandboxClient();
-  const state: UnixLocalSandboxSessionState = {
+  const snapshot = new NoopSnapshotSpec();
+  const client = new UnixLocalSandboxClient({ snapshot });
+  const state: NoopSnapshotSessionState = {
     manifest: new Manifest(),
     workspaceRootPath: workingDirectory,
     workspaceRootOwned: false,
     environment: options.environment,
+    snapshotSpec: snapshot,
   };
   const session = await client.resume(state);
   const sandbox = { client, session };
