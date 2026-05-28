@@ -17,13 +17,20 @@ vi.mock('@openai/agents', async importOriginal => {
   };
 });
 
+let capturedClientOptions: unknown;
 let capturedResumeState: unknown;
+let capturedResumedSession: unknown;
 
 vi.mock('@openai/agents/sandbox/local', () => ({
   UnixLocalSandboxClient: class {
+    constructor(options?: unknown) {
+      capturedClientOptions = options;
+    }
+
     resume = vi.fn().mockImplementation((state: unknown) => {
       capturedResumeState = state;
-      return Promise.resolve({});
+      capturedResumedSession = { state };
+      return Promise.resolve(capturedResumedSession);
     });
   },
 }));
@@ -156,6 +163,9 @@ describe('OpenAIAgentSdkAgentRunner', () => {
   beforeEach(() => {
     vi.mocked(sdkRun).mockReset();
     vi.mocked(setTracingDisabled).mockReset();
+    capturedClientOptions = undefined;
+    capturedResumeState = undefined;
+    capturedResumedSession = undefined;
   });
 
   test('run() calls materializeSkills with skill refs matching the route', async () => {
@@ -233,7 +243,33 @@ describe('OpenAIAgentSdkAgentRunner', () => {
     });
   });
 
-  test('default run function passes a larger turn budget to the OpenAI SDK', async () => {
+  test('default run function disables SDK local sandbox snapshot persistence', async () => {
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    vi.mocked(sdkRun).mockResolvedValue({
+      newItems: [],
+      output: [],
+    } as never);
+
+    const runner = new OpenAIAgentSdkAgentRunner('sk-test', undefined, 'gpt-4o', {
+      materializeSkills,
+      logDestination: nullDest,
+    });
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'What changed?',
+    }));
+
+    expect((capturedClientOptions as { snapshot?: { type?: string } })?.snapshot).toMatchObject({
+      type: 'noop',
+    });
+    expect((capturedResumeState as { snapshotSpec?: { type?: string } })?.snapshotSpec).toMatchObject({
+      type: 'noop',
+    });
+  });
+
+  test('default run function passes the resumed sandbox and turn budget to the OpenAI SDK', async () => {
     const materializeSkills = vi.fn().mockResolvedValue([]);
     vi.mocked(sdkRun).mockResolvedValue({
       newItems: [],
@@ -251,9 +287,14 @@ describe('OpenAIAgentSdkAgentRunner', () => {
       prompt: 'triage issue',
     }));
 
-    expect(vi.mocked(sdkRun).mock.calls[0][2]).toMatchObject({
-      maxTurns: 250,
-    });
+    expect(vi.mocked(sdkRun)).toHaveBeenCalledOnce();
+    const runOptions = vi.mocked(sdkRun).mock.calls[0][2] as {
+      maxTurns?: number;
+      sandbox?: { client?: unknown; session?: unknown };
+    };
+    expect(runOptions.maxTurns).toBe(250);
+    expect(runOptions.sandbox?.client).toBeDefined();
+    expect(runOptions.sandbox?.session).toBe(capturedResumedSession);
   });
 
   test('run() logs each SDK tool call and tool response with sanitized metadata', async () => {
