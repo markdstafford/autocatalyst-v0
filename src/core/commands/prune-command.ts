@@ -146,12 +146,10 @@ export function makePruneHandler(deps: PruneCommandDeps): CommandHandler {
       const isActive = !TERMINAL_PRUNE_STAGES.has(run.stage);
       const activeMarker = isActive ? ' — ACTIVE stage' : '';
       const workspacePath = run.workspace_path ? run.workspace_path : '(none)';
-      const channelId = run.conversation?.channel_id ?? '(unknown)';
-      const conversationId = run.conversation?.conversation_id ?? '(unknown)';
-      return `• run \`${shortId}...\` (\`${run.request_id}\`) — stage \`${run.stage}\`${activeMarker}\n  workspace: \`${workspacePath}\`\n  conversation thread: ${channelId} / ${conversationId}`;
+      return `• run \`${shortId}...\` (\`${run.request_id}\`) — stage \`${run.stage}\`${activeMarker}\n  workspace: \`${workspacePath}\``;
     }).join('\n\n');
 
-    const previewText = `Prune preview — reply \`Yes\` in this thread to delete these resources. Anything else cancels.\n\n${runLines}\n\nThis will delete workspace directories, attempt to delete conversation thread messages, and remove the listed run records from runs.json. This cannot be undone.`;
+    const previewText = `Prune preview — reply \`Yes\` in this thread to delete these resources. Anything else cancels.\n\n${runLines}\n\nThis will delete workspace directories and remove the listed run records from runs.json. This cannot be undone.`;
 
     deps.logger.info(
       { event: 'prune.preview_created', mode, count: selectedRuns.length, author: event.author, channel_id: event.channel.id },
@@ -272,19 +270,6 @@ export function makePruneConfirmHandler(deps: PruneCommandDeps): CommandHandler 
         }
       }
 
-      // Best-effort conversation thread deletion
-      let threadSummary = '';
-      if (run.conversation && deps.threadPruner) {
-        const threadResult = await deps.threadPruner.pruneThread(run.conversation);
-        if (threadResult.status === 'partial') {
-          threadSummary = `thread partially deleted: ${threadResult.failed_messages.length} message(s) failed`;
-        } else if (threadResult.status === 'failed') {
-          threadSummary = `thread deletion failed: ${threadResult.errors[0] ?? 'unknown error'}`;
-        } else if (threadResult.status === 'ok') {
-          threadSummary = 'conversation thread deleted';
-        }
-      }
-
       // Hard-delete run record
       deps.runs.delete(run.request_id);
       deps.persist();
@@ -294,7 +279,6 @@ export function makePruneConfirmHandler(deps: PruneCommandDeps): CommandHandler 
       if (workspaceResult) {
         parts.push(workspaceResult.status === 'missing' ? 'workspace missing (skipped)' : 'workspace deleted');
       }
-      if (threadSummary) parts.push(threadSummary);
       parts.push('run record removed');
 
       okItems.push(`\`${requestId}\` — ${parts.join(', ')}`);

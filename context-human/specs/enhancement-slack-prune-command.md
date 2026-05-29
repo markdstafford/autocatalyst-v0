@@ -97,10 +97,11 @@ Prune preview — reply `Yes` in this thread to delete these resources. Anything
 
 • run `7b1...` (`request-001`) — stage `done`
   workspace: `/Users/.../.autocatalyst/workspaces/autocatalyst/request-001`
-  Slack thread: C123 / 1710000000.000000
 
-This will delete workspace directories, attempt to delete Slack thread messages, and remove the listed run records from runs.json. This cannot be undone.
+This will delete workspace directories and remove the listed run records from runs.json. This cannot be undone.
 ```
+
+> **Note:** Slack thread deletion is intentionally skipped for Phase 1. The bot token cannot delete human-authored messages (produces noisy `cant_delete_message` errors), so prune is disk-only: it deletes the workspace directory and removes the run record from `runs.json`. The `SlackThreadPruner` and `user_token` plumbing remain in place for a potential future user-token fallback but are not wired to the prune confirm handler.
 If no runs match, reply with a non-destructive message such as `No completed runs found to prune.` and create no pending confirmation.
 ### Confirmation
 
@@ -118,12 +119,12 @@ After confirmation, reply with a per-item summary:
 Prune complete.
 
 OK:
-• `request-001` — workspace deleted, Slack thread deleted, run record removed
+• `request-001` — workspace deleted, run record removed
 
 Failed:
-• `request-002` — workspace deleted, Slack thread partially deleted: chat.delete failed for 2 messages; run record removed
+• `request-002` — workspace deletion failed: <error>
 ```
-Best-effort Slack deletion failures are reported in the summary and logged. They do not prevent workspace deletion or run record removal unless the failure happens before the run can be identified safely.
+The Slack thread is intentionally left intact (see Phase 1 note above). Only the workspace directory and run record are removed.
 ### Active run protection
 
 For explicit IDs, any run whose stage is not `done` or `failed` is considered non-terminal for pruning purposes. That includes `pr_open`, `reviewing_*`, `implementing`, `planning`, and other active lifecycle states. If an explicit ID targets a non-terminal run and the command omits `--active`, the command replies with a refusal that lists the affected run IDs and does not create a confirmation.
@@ -216,7 +217,7 @@ For each confirmed run:
 	- non-terminal entries must still require that the pending operation was created with `--active`.
 3. Validate the workspace path if it is non-empty.
 4. Delete the workspace directory, tolerating missing paths.
-5. Delete the Slack thread best-effort when `run.conversation.provider === 'slack'` and a Slack thread pruner is configured.
+5. ~~Delete the Slack thread~~ (intentionally skipped — see Phase 1 note; the Slack thread is left intact).
 6. Hard-delete the run from the `runs` map.
 7. Persist `runs.json`.
 8. Add an item to the summary.

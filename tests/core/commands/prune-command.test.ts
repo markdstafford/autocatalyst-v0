@@ -234,8 +234,8 @@ describe('makePruneHandler', () => {
     expect(replies[0]).toContain('req-001');
     expect(replies[0]).toContain('done');
     expect(replies[0]).toContain('/workspaces/req-001');
-    expect(replies[0]).toContain('C123');
-    expect(replies[0]).toContain('ts-req-001');
+    // Slack thread is intentionally omitted from preview (disk-only prune)
+    expect(replies[0]).not.toContain('conversation thread');
   });
 
   it('preview text shows (none) for empty workspace_path', async () => {
@@ -247,13 +247,15 @@ describe('makePruneHandler', () => {
     expect(replies[0]).toContain('(none)');
   });
 
-  it('preview text shows (unknown) for runs without conversation', async () => {
-    const run = makeRun({ request_id: 'req-001', stage: 'done' });
+  it('preview text shows workspace path for runs without conversation', async () => {
+    const run = makeRun({ request_id: 'req-001', stage: 'done', workspace_path: '/workspaces/req-001' });
     delete (run as any).conversation;
     const runs = new Map([['req-001', run]]);
     const { deps, replyFn, replies } = makeDeps(runs);
     await makePruneHandler(deps)(makeEvent(['req-001']), replyFn);
-    expect(replies[0]).toContain('(unknown)');
+    // Preview includes workspace path; conversation thread is not shown (disk-only prune)
+    expect(replies[0]).toContain('/workspaces/req-001');
+    expect(replies[0]).not.toContain('conversation thread');
   });
 
   it('logs prune.preview_created with correct fields', async () => {
@@ -375,7 +377,7 @@ describe('makePruneConfirmHandler', () => {
     expect(replies[0]).toContain('Failed:');
   });
 
-  it('prunes slack thread and reports partial failures', async () => {
+  it('does not call thread pruner even when provided (disk-only prune)', async () => {
     const run = makeRun({ request_id: 'req-001' });
     const runs = new Map([['req-001', run]]);
     const { deps, replyFn, replies, confirmationRegistry } = makeDeps(runs);
@@ -390,14 +392,17 @@ describe('makePruneConfirmHandler', () => {
     deps.channelRepoMap = new Map([['slack:C123', { channel_ref: 'slack:C123', repo_url: 'git@x.git', workspace_root: '/workspaces' }]]);
     deps.workspacePruner.prune = vi.fn().mockResolvedValue({ status: 'deleted', workspace_path: '/workspaces/req-001', workspace_root: '/workspaces' });
 
-    const threadPruner = { pruneThread: vi.fn().mockResolvedValue({ status: 'partial', deleted_messages: 2, failed_messages: [{ message_id: 'ts1', error: 'cant_delete' }], errors: ['cant_delete'] }) };
+    const threadPruner = { pruneThread: vi.fn() };
     deps.threadPruner = threadPruner;
 
     const handler = makePruneConfirmHandler(deps);
     await handler(makeEvent([], { messageText: 'Yes' }), replyFn);
 
-    expect(runs.has('req-001')).toBe(false); // deleted despite partial Slack failure
+    // Thread pruner must not be called — prune is disk-only
+    expect(threadPruner.pruneThread).not.toHaveBeenCalled();
+    expect(runs.has('req-001')).toBe(false);
     expect(replies[0]).toContain('OK:');
-    expect(replies[0]).toContain('partially');
+    expect(replies[0]).toContain('run record removed');
+    expect(replies[0]).not.toContain('thread');
   });
 });
