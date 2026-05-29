@@ -23,11 +23,11 @@ Behavior
 
 `:ac-prune: completed`
 Slack channel message
-Preview all `done` runs associated with the current Slack channel, wait for an exact `Yes` reply in the command thread, then delete each run's workspace directory, delete the associated Slack thread best-effort, and hard-delete the run record from `runs.json`.
+Preview all `done` runs associated with the current Slack channel, wait for an exact `Yes` reply in the command thread, then delete each run's workspace directory and hard-delete the run record from `runs.json`. (Slack thread deletion is Phase 2; see Phase 1 note below.)
 
 `:ac-prune:  [...]`
 Slack channel message
-Preview the named run or runs, wait for an exact `Yes` reply in the command thread, then delete each selected run's workspace directory, delete the associated Slack thread best-effort, and hard-delete each run record from `runs.json`. Runs in non-terminal stages require `--active` in addition to confirmation.
+Preview the named run or runs, wait for an exact `Yes` reply in the command thread, then delete each selected run's workspace directory and hard-delete each run record from `runs.json`. Runs in non-terminal stages require `--active` in addition to confirmation. (Slack thread deletion is Phase 2; see Phase 1 note below.)
 
 Autocatalyst also adds `workspace.auto_prune`, a config option under the existing `workspace:` section. It defaults to `true`. When enabled, merge-driven completion deletes only the run workspace after `prManager.mergePR(run.workspace_path, run.pr_url)` succeeds and the run transitions to `done`. Automatic pruning never deletes Slack messages and never removes the run record; it clears `run.workspace_path` after successful deletion so status views do not point at a reclaimed directory.
 ## Why
@@ -60,7 +60,7 @@ Automatic workspace pruning addresses the most common low-risk cleanup case. Aft
 - Bulk `completed` pruning includes only `stage: 'done'`; it does not sweep `failed`, `pr_open`, or active runs.
 - Validate every workspace path as a direct child of its configured workspace root before deletion.
 - Tolerate missing workspace directories during prune; missing workspaces should not block Slack/thread cleanup or run record deletion.
-- Delete Slack threads best-effort and report per-run failures without aborting other runs.
+- Phase 1 is disk-only: delete workspace directories and run records only. Slack thread deletion is deferred to Phase 2.
 - Add `workspace.auto_prune`, defaulting to `true`, and automatically reclaim only the workspace directory after merge-driven `done` transitions.
 - Preserve existing run lifecycle semantics: `done` remains the only completed state, `failed` remains failed, and no new terminal stage is introduced.
 ## Non-goals
@@ -336,9 +336,8 @@ Do not log secrets or full Slack token errors. It is acceptable to log run IDs, 
 - Restart/no pending confirmation causes a later `Yes` to be ignored by normal routing.
 ### Manual prune execution tests
 
-- Successful prune deletes workspace, invokes Slack thread pruner, removes run from map, persists run store, and replies summary.
-- Missing workspace still removes Slack thread and run record.
-- Slack thread partial deletion still removes run record and reports partial Slack cleanup.
+- Successful prune deletes workspace, removes run from map, persists run store, and replies summary.
+- Missing workspace still removes run record (Slack thread is left intact per Phase 1).
 - Workspace guard failure prevents deletion and leaves the run record intact.
 - In `completed` mode, a run that changed from `done` to another stage between preview and confirmation is skipped/fails safely.
 - Persist failure is logged by `RunStore` as non-fatal per existing behavior; summary should not claim persistence succeeded if the command can detect failure.
@@ -391,14 +390,14 @@ Do not log secrets or full Slack token errors. It is acceptable to log run IDs, 
 	- **Dependencies:** Command registration, confirmation registry.
 ### Story 3 — Execute manual prune
 
-- **Task: Implement Slack thread pruner**
-	- **Description:** Add Slack `conversations.replies` pagination, per-message `chat.delete`, best-effort reaction removal, and root deletion with partial-result reporting.
-	- **Acceptance criteria:** Pagination and deletion order are covered; per-message failures are reported but do not abort the entire thread prune.
+- **Task: Implement Slack thread pruner** *(Phase 2 — future work only)*
+	- **Description:** Add Slack `conversations.replies` pagination, per-message `chat.delete`, best-effort reaction removal, and root deletion with partial-result reporting. The `ThreadPruner` interface and `SlackThreadPruner` stub exist for future wiring but are not called by the Phase 1 confirm handler.
+	- **Acceptance criteria (Phase 2):** Pagination and deletion order are covered; per-message failures are reported but do not abort the entire thread prune.
 	- **Dependencies:** None.
 - **Task: Implement ****`prune.confirm`**** execution**
 	- **Description:** Consume pending prune plans; exact `Yes` executes; anything else cancels; execute each item independently.
-	- **Acceptance criteria:** Successful items delete workspace, prune Slack thread best-effort, remove run record, persist, and appear in summary; failed items are isolated.
-	- **Dependencies:** Workspace prune service, Slack thread pruner, confirmation registry.
+	- **Acceptance criteria:** Successful items delete workspace, remove run record, persist, and appear in summary (Phase 1: Slack thread is left intact); failed items are isolated.
+	- **Dependencies:** Workspace prune service, confirmation registry.
 ### Story 4 — Add merge-time auto-prune
 
 - **Task: Add ****`workspace.auto_prune`**** config**
