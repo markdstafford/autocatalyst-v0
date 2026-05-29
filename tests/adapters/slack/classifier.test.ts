@@ -270,6 +270,21 @@ describe('classifyMessage — MESSAGE_ONLY_COMMANDS thread guard (ac-set-status)
   });
 });
 
+describe('classifyMessage — prune command', () => {
+  it('classifies :ac-prune: completed as a prune command', () => {
+    const result = classifyMessage(
+      { text: ':ac-prune: completed', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('prune');
+      expect(result.args).toEqual(['completed']);
+    }
+  });
+});
+
 describe('classifyMessage — classify-intent command', () => {
   it(':ac-classify-intent: hello world → command classify-intent with args [hello, world]', () => {
     const result = classifyMessage(

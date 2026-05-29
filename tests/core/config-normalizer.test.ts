@@ -54,6 +54,16 @@ describe('normalizeWorkflowConfig', () => {
     expect(normalized.workspace_root).toBe('/tmp/workspaces');
   });
 
+  it('workspace_auto_prune defaults to true when not set', () => {
+    const normalized = normalizeWorkflowConfig({});
+    expect(normalized.workspace_auto_prune).toBe(true);
+  });
+
+  it('workspace_auto_prune preserves false', () => {
+    const normalized = normalizeWorkflowConfig({ workspace: { auto_prune: false } });
+    expect(normalized.workspace_auto_prune).toBe(false);
+  });
+
   it('preserves channel and publisher config in provider-owned config blocks', () => {
     const normalized = normalizeWorkflowConfig({
       channels: [

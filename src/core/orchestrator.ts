@@ -83,6 +83,8 @@ export interface OrchestratorDeps {
   branchGuard?: BranchGuard;
   reviewCoordinator?: ImplementationReviewCoordinator;
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
+  autoPruneWorkspace?: boolean;
+  workspacePruner?: import('./workspace-pruner.js').WorkspacePruner;
 }
 
 interface OrchestratorOptions {
@@ -569,6 +571,8 @@ export class OrchestratorImpl implements Orchestrator {
       branchGuard: this.deps.branchGuard,
       reviewCoordinator: this.deps.reviewCoordinator,
       validatePlanPath: this.deps.validatePlanPath,
+      autoPruneWorkspace: this.deps.autoPruneWorkspace,
+      workspacePruner: this.deps.workspacePruner,
     });
   }
 

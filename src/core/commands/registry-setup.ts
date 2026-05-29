@@ -1,6 +1,12 @@
 import type { CommandRegistry } from '../../types/commands.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import type { IntentClassifier } from '../../types/intent.js';
+import type { ChannelRepoMap } from '../../types/config.js';
+import type { CommandConfirmationRegistry } from '../command-confirmations.js';
+import type { PruneConfirmationPayload } from './prune-command.js';
+import type { WorkspacePruner } from '../workspace-pruner.js';
+import type { ThreadPruner } from '../../types/thread-pruner.js';
+import type pino from 'pino';
 import { makeClassifyIntentHandler } from './classify-intent-command.js';
 import { makeHealthHandler, makeHelpHandler } from './meta-commands.js';
 import {
@@ -10,6 +16,7 @@ import {
   makeRunStatusHandler,
 } from './run-commands.js';
 import { createSetStatusHandler } from './set-status-command.js';
+import { makePruneHandler, makePruneConfirmHandler } from './prune-command.js';
 
 export interface DefaultCommandDeps {
   runs: Map<string, Run>;
@@ -19,6 +26,12 @@ export interface DefaultCommandDeps {
   getActiveRunCount: () => number;
   intentClassifier: IntentClassifier;
   overrideRunStage: (requestId: string, stage: RunStage) => 'updated' | 'not_found' | 'invalid_stage';
+  confirmationRegistry?: CommandConfirmationRegistry<PruneConfirmationPayload>;
+  workspacePruner?: WorkspacePruner;
+  threadPruner?: ThreadPruner;
+  channelRepoMap?: ChannelRepoMap;
+  persist?: () => void;
+  logger?: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
 }
 
 export function registerDefaultCommands(registry: CommandRegistry, deps: DefaultCommandDeps): void {
@@ -65,4 +78,19 @@ export function registerDefaultCommands(registry: CommandRegistry, deps: Default
     }),
     "Override a stuck run's stage. Usage: reply with `:ac-set-status: <stage>` in a run thread. E.g. `:ac-set-status: reviewing_implementation`",
   );
+
+  // Only register prune commands when all required dependencies are provided
+  if (deps.confirmationRegistry && deps.workspacePruner && deps.channelRepoMap && deps.persist && deps.logger) {
+    const pruneDeps: import('./prune-command.js').PruneCommandDeps = {
+      runs: deps.runs,
+      confirmationRegistry: deps.confirmationRegistry,
+      workspacePruner: deps.workspacePruner,
+      threadPruner: deps.threadPruner,
+      channelRepoMap: deps.channelRepoMap,
+      persist: deps.persist,
+      logger: deps.logger,
+    };
+    registry.register('prune', makePruneHandler(pruneDeps), 'Preview and confirm destructive run cleanup. Usage: `:ac-prune: completed` or `:ac-prune: <run-id> [...] [--active]`');
+    registry.register('prune.confirm', makePruneConfirmHandler(pruneDeps), 'Internal confirmation handler for pending prune operations. Reply exactly `Yes` in the prune preview thread.');
+  }
 }

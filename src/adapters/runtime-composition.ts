@@ -14,6 +14,7 @@ import { normalizeWorkflowConfig } from '../core/config-normalizer.js';
 import { configExists, runInit } from '../core/init.js';
 import { channelRegistryToRepoMap, type LoadedConfig, type PreRepoEntry, type ProfileConfig, type WorkflowConfig } from '../types/config.js';
 import { SlackAdapter } from './slack/slack-adapter.js';
+import { SlackThreadPruner } from './slack/thread-pruner.js';
 import { ThreadRegistry } from './slack/thread-registry.js';
 import { WorkspaceManagerImpl } from '../core/workspace-manager.js';
 import { SlackCanvasPublisher } from './slack/canvas-publisher.js';
@@ -50,6 +51,9 @@ import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-ru
 import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 import { ImplementationReviewCoordinator } from '../core/ai/implementation-review-coordinator.js';
 import { createLogger } from '../core/logger.js';
+import { WorkspacePruner } from '../core/workspace-pruner.js';
+import { CommandConfirmationRegistryImpl } from '../core/command-confirmations.js';
+import type { PruneConfirmationPayload } from '../core/commands/prune-command.js';
 
 export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
 
@@ -182,6 +186,11 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     logger,
   });
 
+  const threadPruner = new SlackThreadPruner(boltApp);
+  const workspacePruner = new WorkspacePruner();
+  const confirmationRegistry = new CommandConfirmationRegistryImpl<PruneConfirmationPayload>();
+  const pruneLogger = createLogger('prune-commands');
+
   return bootstrapWorkflowRuntime(currentConfig, {
     adapter,
     workspaceManager,
@@ -204,6 +213,11 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     channelRepoMap,
     reacjiComplete,
     reviewCoordinator,
+    threadPruner,
+    workspacePruner,
+    confirmationRegistry,
+    pruneLogger,
+    autoPruneWorkspace: normalizedConfig.workspace_auto_prune,
     isConnected: () => adapter.isConnected(),
     meter: options.meter,
     onStop: () => agentRunner.close?.() ?? Promise.resolve(),

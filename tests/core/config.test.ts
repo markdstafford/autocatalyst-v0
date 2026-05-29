@@ -12,6 +12,7 @@ import {
   loadConfig,
   resolveAiConfig,
   getImplementationReviewPolicy,
+  isWorkspaceAutoPruneEnabled,
 } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
 
@@ -421,6 +422,22 @@ describe('validateConfig: implementation_review', () => {
   });
 });
 
+// ─── validateConfig: workspace.auto_prune ────────────────────────────────────
+
+describe('validateConfig: workspace.auto_prune', () => {
+  it('accepts workspace.auto_prune: true', () => {
+    expect(() => validateConfig({ workspace: { auto_prune: true } } as WorkflowConfig)).not.toThrow();
+  });
+
+  it('accepts workspace.auto_prune: false', () => {
+    expect(() => validateConfig({ workspace: { auto_prune: false } } as WorkflowConfig)).not.toThrow();
+  });
+
+  it('rejects non-boolean workspace.auto_prune', () => {
+    expect(() => validateConfig({ workspace: { auto_prune: 'yes' as any } } as WorkflowConfig)).toThrow('workspace.auto_prune must be a boolean');
+  });
+});
+
 // ─── getImplementationReviewPolicy ───────────────────────────────────────────
 
 describe('getImplementationReviewPolicy', () => {
@@ -457,5 +474,21 @@ describe('getImplementationReviewPolicy', () => {
   it('defaults on_review_failure to warn when not set', () => {
     const policy = getImplementationReviewPolicy({ implementation_review: { max_initial_rounds: 2 } } as unknown as WorkflowConfig);
     expect(policy.on_review_failure).toBe('warn');
+  });
+});
+
+// ─── isWorkspaceAutoPruneEnabled ─────────────────────────────────────────────
+
+describe('isWorkspaceAutoPruneEnabled', () => {
+  it('defaults to true when field is absent', () => {
+    expect(isWorkspaceAutoPruneEnabled({} as WorkflowConfig)).toBe(true);
+  });
+
+  it('returns true when set to true', () => {
+    expect(isWorkspaceAutoPruneEnabled({ workspace: { auto_prune: true } } as WorkflowConfig)).toBe(true);
+  });
+
+  it('returns false when set to false', () => {
+    expect(isWorkspaceAutoPruneEnabled({ workspace: { auto_prune: false } } as WorkflowConfig)).toBe(false);
   });
 });

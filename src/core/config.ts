@@ -84,6 +84,10 @@ export function validateConfig(config: WorkflowConfig): void {
     }
   }
 
+  if (config.workspace?.auto_prune !== undefined && typeof config.workspace.auto_prune !== 'boolean') {
+    throw new Error('workspace.auto_prune must be a boolean');
+  }
+
   if (config.channels !== undefined) {
     if (!Array.isArray(config.channels)) throw new Error('channels must be an array');
     for (const [index, channel] of config.channels.entries()) {
@@ -180,6 +184,10 @@ export function validateConfig(config: WorkflowConfig): void {
       }
     }
   }
+}
+
+export function isWorkspaceAutoPruneEnabled(config: WorkflowConfig): boolean {
+  return config.workspace?.auto_prune ?? true;
 }
 
 export function redactConfig(

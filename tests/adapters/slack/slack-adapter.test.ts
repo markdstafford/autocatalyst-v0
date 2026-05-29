@@ -1255,3 +1255,61 @@ describe('SlackAdapter — reaction command messageText', () => {
     await adapter.stop();
   });
 });
+
+describe('SlackAdapter — prune confirmation routing', () => {
+  it('emits prune.confirm command for plain reply in a pending confirmation thread', async () => {
+    const mock = makeMockApp({ channels: [{ name: 'my-channel', id: 'C123' }] });
+    const registry = { hasPending: vi.fn().mockReturnValue(true) };
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel' }, { logDestination: nullDest, confirmationRegistry: registry });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: 'Yes',
+      user: 'U123',
+      ts: '200.0',
+      thread_ts: '100.0',
+      channel: 'C123',
+    });
+    const event = await eventPromise;
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.command).toBe('prune.confirm');
+      expect(event.payload.args).toEqual(['Yes']);
+      expect(event.payload.messageText).toBe('Yes');
+    }
+
+    await adapter.stop();
+  });
+
+  it('does NOT emit prune.confirm for plain reply in non-pending thread', async () => {
+    const mock = makeMockApp({ channels: [{ name: 'my-channel', id: 'C123' }] });
+    const registry = { hasPending: vi.fn().mockReturnValue(false) };
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel' }, { logDestination: nullDest, confirmationRegistry: registry });
+    await adapter.start();
+
+    // This should be ignored (not a command, not a mention)
+    const events: unknown[] = [];
+    const iterPromise = (async () => {
+      for await (const event of adapter.receive()) {
+        events.push(event);
+        break;
+      }
+    })();
+
+    await mock._triggerMessage({
+      text: 'Yes',
+      user: 'U123',
+      ts: '200.0',
+      thread_ts: '100.0',
+      channel: 'C123',
+    });
+
+    // Stop the adapter to end the stream
+    await adapter.stop();
+    await iterPromise;
+
+    // No command event should have been emitted
+    expect(events.length).toBe(0);
+  });
+});
