@@ -138,7 +138,7 @@ If `--active` is present, non-terminal runs may be previewed and pruned after th
 - `src/core/commands/prune-command.ts` — new command handler for parsing, previewing, confirmation, and execution.
 - `src/core/command-confirmations.ts` — new in-memory pending confirmation registry.
 - `src/types/commands.ts` or adjacent command types — add any metadata needed for confirmation events without changing ordinary command dispatch behavior.
-- `src/adapters/slack/slack-adapter.ts` — emit confirmation command events for plain replies in pending confirmation threads; expose or delegate Slack thread deletion.
+- `src/adapters/slack/slack-adapter.ts` — emit confirmation command events for plain replies in pending confirmation threads.
 - `src/types/config.ts`, `src/core/config.ts`, `src/config/defaults.ts` — add and validate `workspace.auto_prune`.
 - `src/core/workspace-manager.ts` or a new `src/core/workspace-pruner.ts` — add reusable guarded workspace deletion.
 - `src/core/handlers/pr-merge-handler.ts` and `src/core/default-handler-registry.ts` — call auto-prune only after merge-driven transition to `done`.
@@ -185,7 +185,9 @@ Guarded deletion uses `fs.rm` / `rmSync` with `{ recursive: true, force: true }`
 - `workspace.prune_failed`
 - `workspace.prune_rejected`
 Fields include `run_id`, `request_id`, `workspace_path`, `workspace_root`, `mode` (`manual` or `auto`), and `duration_ms` where applicable.
-### Slack thread deletion
+### Slack thread deletion *(Phase 2 — future work)*
+
+> **Phase 2 only.** This section is retained for design continuity. Nothing in this section is wired to the Phase 1 confirm handler. The `ThreadPruner` interface and `SlackThreadPruner` stub may exist for forward compatibility but are not called during Phase 1 execution.
 
 Add a Slack-specific thread deletion capability behind a small interface so core command logic can report provider support cleanly:
 ```typescript
@@ -289,13 +291,16 @@ Add structured logs for:
 - `prune.item_completed`
 - `prune.item_failed`
 - `prune.completed`
+- `workspace.auto_prune_started`
+- `workspace.auto_pruned`
+- `workspace.auto_prune_failed`
+
+*(Phase 2 — future work)*
 - `slack.thread_prune_started`
 - `slack.thread_pruned`
 - `slack.thread_prune_partial`
 - `slack.thread_prune_failed`
-- `workspace.auto_prune_started`
-- `workspace.auto_pruned`
-- `workspace.auto_prune_failed`
+
 Do not log secrets or full Slack token errors. It is acceptable to log run IDs, request IDs, Slack channel IDs, Slack timestamps, workspace paths, and sanitized error strings.
 ## Testing plan
 
@@ -341,11 +346,14 @@ Do not log secrets or full Slack token errors. It is acceptable to log run IDs, 
 - Workspace guard failure prevents deletion and leaves the run record intact.
 - In `completed` mode, a run that changed from `done` to another stage between preview and confirmation is skipped/fails safely.
 - Persist failure is logged by `RunStore` as non-fatal per existing behavior; summary should not claim persistence succeeded if the command can detect failure.
-### Slack adapter/thread pruner tests
+### Slack adapter tests
 
 - `ac-prune` maps to `prune`.
 - Plain unmentioned `Yes` in a pending confirmation thread emits `prune.confirm`.
 - Plain unmentioned reply in a non-pending thread remains ignored.
+
+### Slack thread pruner tests *(Phase 2 — future work)*
+
 - `conversations.replies` pagination is followed.
 - Replies are deleted before the root message.
 - Per-message `chat.delete` failures produce `partial` results.
@@ -410,7 +418,7 @@ Do not log secrets or full Slack token errors. It is acceptable to log run IDs, 
 	- **Dependencies:** Workspace prune service, config helper.
 ## Risks and mitigations
 
-- **Slack cannot delete some messages.** Human-authored messages and some reactions may be protected by Slack scopes or workspace policy. Mitigation: treat Slack cleanup as best-effort, log per-message failures, and report partial cleanup in the command summary.
+- **Slack cannot delete some messages** *(Phase 2 risk)*. Human-authored messages and some reactions may be protected by Slack scopes or workspace policy. Mitigation: treat Slack cleanup as best-effort, log per-message failures, and report partial cleanup in the command summary. Not applicable in Phase 1; Slack thread deletion is deferred.
 - **Plain ****`Yes`**** replies could be accidental.** Mitigation: confirmations are scoped to the command thread, requesting author, exact case-sensitive `Yes`, and a short expiry.
 - **Path deletion is irreversible.** Mitigation: direct-child workspace root guard runs before every deletion, and manual deletion always requires preview plus confirmation.
 - **Default auto-prune changes upgrade behavior.** Mitigation: document the new default in config comments and release notes; operators can set `workspace.auto_prune: false`.
