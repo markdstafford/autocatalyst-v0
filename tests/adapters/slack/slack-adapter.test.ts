@@ -1312,4 +1312,36 @@ describe('SlackAdapter — prune confirmation routing', () => {
     // No command event should have been emitted
     expect(events.length).toBe(0);
   });
+
+  it('real CommandConfirmationRegistryImpl: pending confirmation allows plain reply to route to prune.confirm', async () => {
+    const { CommandConfirmationRegistryImpl } = await import('../../../src/core/command-confirmations.js');
+    const registry = new CommandConfirmationRegistryImpl();
+    registry.create({
+      command: 'prune',
+      conversation: { provider: 'slack', channel_id: 'C123', conversation_id: '100.0' },
+      requested_by: 'U123',
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      payload: { mode: 'completed', request_ids: ['req-001'], allow_active: false },
+    });
+
+    const mock = makeMockApp({ channels: [{ name: 'my-channel', id: 'C123' }] });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel' }, { logDestination: nullDest, confirmationRegistry: registry });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: 'Yes',
+      user: 'U123',
+      ts: '200.0',
+      thread_ts: '100.0',
+      channel: 'C123',
+    });
+    const event = await eventPromise;
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.command).toBe('prune.confirm');
+      expect(event.payload.args).toEqual(['Yes']);
+    }
+    await adapter.stop();
+  });
 });

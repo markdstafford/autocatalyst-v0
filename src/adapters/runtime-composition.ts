@@ -136,14 +136,15 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     : [];
 
   const threadRegistry = new ThreadRegistry();
+  const confirmationRegistry = new CommandConfirmationRegistryImpl<PruneConfirmationPayload>();
   const adapter = new SlackAdapter(
     boltApp,
     isMultiRepo
       ? { repoEntries: preRepoEntries }
       : { channelName, repo_url, workspace_root: workspaceRoot },
     ackEmoji
-      ? { registry: threadRegistry, ackEmoji }
-      : { registry: threadRegistry },
+      ? { registry: threadRegistry, ackEmoji, confirmationRegistry }
+      : { registry: threadRegistry, confirmationRegistry },
   );
 
   const channelRegistry = await adapter.resolveChannels();
@@ -188,7 +189,6 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
   const threadPruner = new SlackThreadPruner(boltApp);
   const workspacePruner = new WorkspacePruner();
-  const confirmationRegistry = new CommandConfirmationRegistryImpl<PruneConfirmationPayload>();
   const pruneLogger = createLogger('prune-commands');
 
   return bootstrapWorkflowRuntime(currentConfig, {

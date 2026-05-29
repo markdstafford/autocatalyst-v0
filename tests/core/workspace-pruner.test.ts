@@ -109,7 +109,7 @@ describe('WorkspacePruner', () => {
     expect(events).toContain('workspace.pruned');
   });
 
-  it('treats a missing direct-child workspace as successful force deletion', async () => {
+  it('returns missing status for a workspace directory that does not exist', async () => {
     const pruner = new WorkspacePruner({
       logDestination: { write: () => {} } as pino.DestinationStream,
     });
@@ -122,7 +122,11 @@ describe('WorkspacePruner', () => {
       mode: 'auto',
     });
 
-    expect(result.status).toBe('deleted');
+    expect(result.status).toBe('missing');
+    if (result.status === 'missing') {
+      expect(result.workspace_path).toBe(join(root, 'missing'));
+      expect(result.workspace_root).toBe(root);
+    }
   });
 
   it('does not call rm when guard rejects and returns rejected status', async () => {
@@ -169,10 +173,12 @@ describe('WorkspacePruner', () => {
 
   it('returns failed status when rm throws an error', async () => {
     const rmFn = vi.fn().mockRejectedValue(new Error('permission denied'));
+    const statFn = vi.fn().mockResolvedValue({});
     const records: Record<string, unknown>[] = [];
     const pruner = new WorkspacePruner({
       logDestination: { write: (msg: string) => records.push(JSON.parse(msg)) } as pino.DestinationStream,
       rmFn,
+      statFn,
     });
 
     const result = await pruner.prune({

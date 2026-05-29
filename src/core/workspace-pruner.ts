@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { homedir } from 'node:os';
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import type pino from 'pino';
 import { createLogger } from './logger.js';
 
@@ -85,17 +85,20 @@ export function assertDirectWorkspaceChild(
 interface WorkspacePrunerOptions {
   logDestination?: pino.DestinationStream;
   rmFn?: typeof rm;
+  statFn?: typeof stat;
 }
 
 export class WorkspacePruner {
   private readonly log: pino.Logger;
   private readonly rmFn: typeof rm;
+  private readonly statFn: typeof stat;
 
   constructor(options?: WorkspacePrunerOptions) {
     this.log = createLogger('workspace-pruner', {
       destination: options?.logDestination,
     });
     this.rmFn = options?.rmFn ?? rm;
+    this.statFn = options?.statFn ?? stat;
   }
 
   async prune(request: WorkspacePruneRequest): Promise<WorkspacePruneResult> {
@@ -131,6 +134,22 @@ export class WorkspacePruner {
     const startedAt = Date.now();
 
     try {
+      // Check existence first so missing workspaces return 'missing' rather than
+      // silently succeeding as 'deleted' (force:true makes rm indistinguishable).
+      try {
+        await this.statFn(resolvedPath);
+      } catch (statErr) {
+        if ((statErr as NodeJS.ErrnoException).code === 'ENOENT') {
+          const duration_ms = Date.now() - startedAt;
+          this.log.info(
+            { event: 'workspace.pruned', run_id, request_id, mode, workspace_root: resolvedRoot, workspace_path: resolvedPath, duration_ms, missing: true },
+            'workspace already missing',
+          );
+          return { status: 'missing', workspace_path: resolvedPath, workspace_root: resolvedRoot };
+        }
+        throw statErr;
+      }
+
       await this.rmFn(resolvedPath, { recursive: true, force: true });
       const duration_ms = Date.now() - startedAt;
 

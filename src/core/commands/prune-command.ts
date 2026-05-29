@@ -25,6 +25,8 @@ export interface PruneCommandDeps {
 
 const CONFIRMATION_TTL_MS = 10 * 60 * 1000;
 const TERMINAL_PRUNE_STAGES = new Set<string>(['done', 'failed']);
+// Tokens that look like mode names but are unsupported non-goals — reject with usage.
+const RESERVED_UNSUPPORTED_MODES = new Set<string>(['all', 'orphans']);
 
 function usage(): string {
   return 'Usage: `:ac-prune: completed` or `:ac-prune: <run-id> [...] [--active]`';
@@ -53,6 +55,12 @@ export function makePruneHandler(deps: PruneCommandDeps): CommandHandler {
     if (positional.length === 0) {
       await reply(usage());
       deps.logger.info({ event: 'prune.preview_rejected' }, 'Prune preview rejected: no positional args');
+      return;
+    }
+
+    if (RESERVED_UNSUPPORTED_MODES.has(positional[0])) {
+      await reply(usage());
+      deps.logger.info({ event: 'prune.preview_rejected', mode: positional[0] }, 'Prune preview rejected: unsupported mode');
       return;
     }
 

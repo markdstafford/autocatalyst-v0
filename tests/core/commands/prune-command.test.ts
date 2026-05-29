@@ -191,6 +191,22 @@ describe('makePruneHandler', () => {
     expect(replies[0]).toContain('Usage:');
   });
 
+  it('unsupported mode "all" returns usage without treating it as a run ID', async () => {
+    const { deps, replyFn, replies, confirmationRegistry } = makeDeps(new Map());
+    await makePruneHandler(deps)(makeEvent(['all']), replyFn);
+    expect(confirmationRegistry.create).not.toHaveBeenCalled();
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toContain('Usage:');
+  });
+
+  it('unsupported mode "orphans" returns usage without treating it as a run ID', async () => {
+    const { deps, replyFn, replies, confirmationRegistry } = makeDeps(new Map());
+    await makePruneHandler(deps)(makeEvent(['orphans']), replyFn);
+    expect(confirmationRegistry.create).not.toHaveBeenCalled();
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toContain('Usage:');
+  });
+
   it('sweepExpired is called and logs when count > 0', async () => {
     const { deps, replyFn, logger, confirmationRegistry } = makeDeps(new Map());
     confirmationRegistry.sweepExpired.mockReturnValue(3);
