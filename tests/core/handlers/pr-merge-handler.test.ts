@@ -55,6 +55,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof PrMergeHand
     logger: {
       warn: vi.fn(),
       error: vi.fn(),
+      info: vi.fn(),
     },
     ...overrides,
   };
@@ -123,5 +124,88 @@ describe('PrMergeHandler', () => {
       expect.objectContaining({ event: 'run.notify_failed', run_id: 'run-001' }),
       'Failed to post completion reaction',
     );
+  });
+});
+
+describe('PrMergeHandler — auto-prune', () => {
+  it('auto-prunes workspace after successful merge when enabled', async () => {
+    const workspacePruner = { prune: vi.fn().mockResolvedValue({ status: 'deleted', workspace_path: '/ws/request-001', workspace_root: '/ws' }) };
+    const persist = vi.fn();
+    const { handler, deps } = makeHandler({
+      autoPruneWorkspace: true,
+      workspacePruner,
+      workspaceRootForRun: () => '/ws',
+      persist,
+    });
+    const run = makeRun({ workspace_path: '/ws/request-001' });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    // Allow async auto-prune to complete
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(result).toEqual({ status: 'done' });
+    expect(workspacePruner.prune).toHaveBeenCalledWith({
+      run_id: run.id,
+      request_id: run.request_id,
+      workspace_root: '/ws',
+      workspace_path: '/ws/request-001',
+      mode: 'auto',
+      allowEmpty: true,
+    });
+    expect(run.workspace_path).toBe('');
+    expect(persist).toHaveBeenCalled();
+  });
+
+  it('does not auto-prune when autoPruneWorkspace is false', async () => {
+    const workspacePruner = { prune: vi.fn() };
+    const { handler } = makeHandler({
+      autoPruneWorkspace: false,
+      workspacePruner,
+      workspaceRootForRun: () => '/ws',
+      persist: vi.fn(),
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(workspacePruner.prune).not.toHaveBeenCalled();
+  });
+
+  it('leaves workspace_path unchanged when pruner fails', async () => {
+    const workspacePruner = { prune: vi.fn().mockResolvedValue({ status: 'failed', workspace_path: '/ws/request-001', workspace_root: '/ws', error: new Error('rm failed') }) };
+    const persist = vi.fn();
+    const { handler } = makeHandler({
+      autoPruneWorkspace: true,
+      workspacePruner,
+      workspaceRootForRun: () => '/ws',
+      persist,
+    });
+    const run = makeRun({ workspace_path: '/ws/request-001' });
+
+    const result = await handler.handle(run, makeFeedback());
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(result).toEqual({ status: 'done' });
+    expect(run.workspace_path).toBe('/ws/request-001'); // unchanged
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-prune when merge fails', async () => {
+    const workspacePruner = { prune: vi.fn() };
+    const { handler } = makeHandler({
+      autoPruneWorkspace: true,
+      workspacePruner,
+      workspaceRootForRun: () => '/ws',
+      persist: vi.fn(),
+      prManager: { mergePR: vi.fn().mockRejectedValue(new Error('merge failed')) },
+    });
+
+    const result = await handler.handle(makeRun(), makeFeedback());
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(workspacePruner.prune).not.toHaveBeenCalled();
   });
 });

@@ -44,4 +44,10 @@ describe('generateDefaultConfig', () => {
     expect(result.ai?.endpoints?.length).toBeGreaterThan(0);
     expect(result.ai?.profiles?.length).toBeGreaterThan(0);
   });
+
+  it('includes workspace.auto_prune: true', () => {
+    const content = generateDefaultConfig('my-repo');
+    const result = parseAutocatalystConfig(content);
+    expect(result.workspace?.auto_prune).toBe(true);
+  });
 });

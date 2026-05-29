@@ -3,6 +3,7 @@ import type { PRManager } from '../../types/issue-tracker.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
+import type { WorkspacePruner } from '../workspace-pruner.js';
 
 export interface PrMergeDeps {
   prManager: Pick<PRManager, 'mergePR'>;
@@ -11,7 +12,11 @@ export interface PrMergeDeps {
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   reactToRunMessage?: (run: Run, reaction: string) => Promise<void>;
   reacjiComplete?: string | null;
-  logger: Pick<pino.Logger, 'warn' | 'error'>;
+  logger: Pick<pino.Logger, 'warn' | 'error' | 'info'>;
+  autoPruneWorkspace?: boolean;
+  workspacePruner?: Pick<WorkspacePruner, 'prune'>;
+  workspaceRootForRun?: (run: Run) => string | undefined;
+  persist?: () => void;
 }
 
 export type PrMergeResult =
@@ -58,6 +63,53 @@ export class PrMergeHandler {
         this.deps.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion reaction');
       });
     }
+    // Auto-prune workspace after successful merge - fire and forget (non-blocking)
+    this.autoPruneWorkspace(run).catch(err => {
+      this.deps.logger.error({ event: 'workspace.auto_prune_failed', run_id: run.id, error: String(err) }, 'Auto-prune threw unexpectedly');
+    });
     return { status: 'done' };
+  }
+
+  private async autoPruneWorkspace(run: Run): Promise<void> {
+    if (this.deps.autoPruneWorkspace === false) return;
+    if (!this.deps.workspacePruner || !this.deps.workspaceRootForRun || !this.deps.persist) return;
+
+    const workspaceRoot = this.deps.workspaceRootForRun(run);
+    if (!workspaceRoot) {
+      this.deps.logger.warn(
+        { event: 'workspace.auto_prune_failed', run_id: run.id, request_id: run.request_id },
+        'Could not determine workspace root for auto-prune',
+      );
+      return;
+    }
+
+    this.deps.logger.info(
+      { event: 'workspace.auto_prune_started', run_id: run.id, request_id: run.request_id, workspace_path: run.workspace_path },
+      'Auto-pruning workspace after merge',
+    );
+
+    const result = await this.deps.workspacePruner.prune({
+      run_id: run.id,
+      request_id: run.request_id,
+      workspace_root: workspaceRoot,
+      workspace_path: run.workspace_path,
+      mode: 'auto',
+      allowEmpty: true,
+    });
+
+    if (result.status === 'deleted' || result.status === 'missing' || result.status === 'skipped') {
+      run.workspace_path = '';
+      run.updated_at = new Date().toISOString();
+      this.deps.persist();
+      this.deps.logger.info(
+        { event: 'workspace.auto_pruned', run_id: run.id, request_id: run.request_id, prune_status: result.status },
+        'Workspace auto-pruned after merge',
+      );
+    } else {
+      this.deps.logger.warn(
+        { event: 'workspace.auto_prune_failed', run_id: run.id, request_id: run.request_id, prune_status: result.status },
+        'Workspace auto-prune failed after merge',
+      );
+    }
   }
 }

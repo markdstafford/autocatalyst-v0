@@ -7,6 +7,8 @@ polling:
 
 workspace:
   root: ~/.autocatalyst/workspaces/${repoName}
+  # WARNING: deletes run workspaces after successful PR merge. Set false to retain workspaces for inspection.
+  auto_prune: true
 
 channels:
   - provider: slack

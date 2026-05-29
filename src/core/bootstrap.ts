@@ -13,6 +13,11 @@ export interface BootstrapWorkflowRuntimeDeps extends Omit<OrchestratorDeps, 'co
   isConnected: () => boolean;
   meter?: Meter;
   onStop?: () => Promise<void>;
+  confirmationRegistry?: import('./command-confirmations.js').CommandConfirmationRegistry<import('./commands/prune-command.js').PruneConfirmationPayload>;
+  workspacePruner?: import('./workspace-pruner.js').WorkspacePruner;
+  threadPruner?: import('../types/thread-pruner.js').ThreadPruner;
+  persist?: () => void;
+  pruneLogger?: Pick<import('pino').Logger, 'info' | 'warn' | 'error'>;
 }
 
 export function bootstrapWorkflowRuntime(
@@ -32,6 +37,12 @@ export function bootstrapWorkflowRuntime(
     { meter: deps.meter },
   );
 
+  // Build persist using the orchestrator's live runs map and the runStore from deps.
+  // This is used by the prune command to save run state after modifying it directly.
+  const persistFn: (() => void) | undefined = deps.persist ?? (
+    deps.runStore ? () => deps.runStore!.save(orchestrator.getRuns()) : undefined
+  );
+
   registerDefaultCommands(commandRegistry, {
     runs: orchestrator.getRuns(),
     cancelRun: requestId => orchestrator.cancelRun(requestId),
@@ -40,6 +51,12 @@ export function bootstrapWorkflowRuntime(
     getActiveRunCount: () => orchestrator.getActiveRunCount(),
     intentClassifier: deps.intentClassifier,
     overrideRunStage: (requestId, stage) => orchestrator.overrideRunStage(requestId, stage),
+    confirmationRegistry: deps.confirmationRegistry,
+    workspacePruner: deps.workspacePruner,
+    threadPruner: deps.threadPruner,
+    channelRepoMap: deps.channelRepoMap,
+    persist: persistFn,
+    logger: deps.pruneLogger,
   });
 
   const service = new Service(config, { orchestrator, onStop: deps.onStop });

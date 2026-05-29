@@ -20,6 +20,7 @@ export interface NormalizedPublisherConfig {
 
 export interface NormalizedWorkflowConfig {
   workspace_root?: string;
+  workspace_auto_prune: boolean;
   channels: NormalizedChannelConfig[];
   publishers: NormalizedPublisherConfig[];
   artifact_policies: Record<ArtifactKind, ArtifactLifecyclePolicy>;
@@ -31,6 +32,7 @@ export function normalizeWorkflowConfig(config: WorkflowConfig): NormalizedWorkf
 
   return {
     workspace_root: config.workspace?.root,
+    workspace_auto_prune: config.workspace?.auto_prune ?? true,
     channels,
     publishers,
     artifact_policies: normalizeArtifactPolicies(config.artifact_policies),

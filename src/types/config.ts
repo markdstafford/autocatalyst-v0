@@ -104,6 +104,7 @@ export interface WorkflowConfig {
   };
   workspace?: {
     root?: string;
+    auto_prune?: boolean;
   };
   telemetry?: TelemetryConfig;
   channels?: WorkflowChannelConfig[];

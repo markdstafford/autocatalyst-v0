@@ -19,6 +19,7 @@ interface SlackAdapterOptions {
   registry?: ThreadRegistry;
   logDestination?: pino.DestinationStream;
   ackEmoji?: string;
+  confirmationRegistry?: { hasPending(conversation: ConversationRef, now?: Date): boolean };
 }
 
 export class SlackAdapter implements ChannelAdapter {
@@ -27,6 +28,7 @@ export class SlackAdapter implements ChannelAdapter {
   private readonly registry: ThreadRegistry;
   private readonly logger: pino.Logger;
   private readonly ackEmoji: string;
+  private readonly confirmationRegistry?: { hasPending(conversation: ConversationRef, now?: Date): boolean };
 
   private botUserId: string | undefined;
   private _resolvedChannelId: string | undefined;
@@ -45,6 +47,7 @@ export class SlackAdapter implements ChannelAdapter {
     this.registry = options?.registry ?? new ThreadRegistry();
     this.logger = createLogger('slack-adapter', { destination: options?.logDestination });
     this.ackEmoji = options?.ackEmoji ?? 'eyes';
+    this.confirmationRegistry = options?.confirmationRegistry;
   }
 
   /**
@@ -184,6 +187,41 @@ export class SlackAdapter implements ChannelAdapter {
       };
 
       if (!msg.user) return; // no user field means it's a system/bot message
+
+      // Check if this is a plain reply in a pending confirmation thread
+      if (msg.thread_ts && msg.thread_ts !== msg.ts && this.confirmationRegistry) {
+        const confirmConversation: ConversationRef = {
+          provider: 'slack',
+          channel_id: channelId,
+          conversation_id: msg.thread_ts,
+        };
+        if (this.confirmationRegistry.hasPending(confirmConversation)) {
+          const confirmEvent: CommandEvent = {
+            command: 'prune.confirm',
+            args: [msg.text ?? ''],
+            messageText: msg.text ?? '',
+            channel: { provider: 'slack', id: channelId },
+            conversation: confirmConversation,
+            origin: {
+              provider: 'slack',
+              channel_id: channelId,
+              conversation_id: msg.thread_ts,
+              message_id: msg.ts,
+            },
+            author: msg.user,
+            received_at: new Date().toISOString(),
+            inferred_context: {
+              request_id: this.registry.resolve(msg.thread_ts),
+            },
+          };
+          this.logger.info(
+            { event: 'slack.command.received', author: msg.user, channel_id: channelId, command: 'prune.confirm', thread_ts: msg.thread_ts },
+            'Command received',
+          );
+          this.emit({ type: 'command', payload: confirmEvent });
+          return;
+        }
+      }
 
       const result = classifyMessage(
         { text: msg.text, user: msg.user, ts: msg.ts, thread_ts: msg.thread_ts },

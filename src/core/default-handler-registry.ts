@@ -14,6 +14,7 @@ import type { ArtifactLifecyclePolicy, ArtifactKind } from '../types/artifact.js
 import type { RequestIntent, Run, RunStage } from '../types/runs.js';
 import type { ChannelRepoMap } from '../types/config.js';
 import type { WorkspaceManager } from './workspace-manager.js';
+import type { WorkspacePruner } from './workspace-pruner.js';
 import type { SpecCommitter } from './spec-committer.js';
 import { HandlerRegistryImpl, type HandlerRegistry } from './handler-registry.js';
 import { GitBranchGuard, type BranchGuard } from './git-branch-guard.js';
@@ -96,6 +97,8 @@ export interface DefaultHandlerRegistryDeps {
   branchGuard?: BranchGuard;
   reviewCoordinator?: ImplementationReviewCoordinator;
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
+  workspacePruner?: Pick<WorkspacePruner, 'prune'>;
+  autoPruneWorkspace?: boolean;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
@@ -330,6 +333,14 @@ async function handlePrMerge(deps: DefaultHandlerRegistryDeps, feedback: ThreadM
     reactToRunMessage: deps.reactToRunMessage,
     reacjiComplete: deps.reacjiComplete,
     logger: deps.logger,
+    autoPruneWorkspace: deps.autoPruneWorkspace,
+    workspacePruner: deps.workspacePruner,
+    workspaceRootForRun: (run) => {
+      if (!run.channel) return undefined;
+      const key = `${run.channel.provider}:${run.channel.id}`;
+      return deps.channelRepoMap.get(key)?.workspace_root;
+    },
+    persist: deps.persist,
   });
   await handler.handle(run, feedback);
 }
