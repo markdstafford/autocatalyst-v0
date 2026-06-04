@@ -170,6 +170,7 @@ describe('composeWorkflowRuntime', () => {
         channelRepoMap: new Map([
           ['slack:C123', { channel_ref: 'slack:C123', repo_url: 'https://example.test/org/repo.git', workspace_root: '/tmp/ws' }],
         ]),
+        specReviewCoordinator: expect.objectContaining({ runSpecReview: expect.any(Function) }),
       }),
     );
     expect(logger.info).toHaveBeenCalledWith(
