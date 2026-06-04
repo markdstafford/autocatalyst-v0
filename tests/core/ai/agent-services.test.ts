@@ -14,6 +14,9 @@ import {
   buildFinalReviewPrompt,
   buildImplementerResponsePrompt,
   parseImplementationReviewResult,
+  buildSpecReviewPrompt,
+  buildSpecAuthorResponsePrompt,
+  parseSpecReviewResult,
   drainAgentRunner,
   validateRequiredResultFile,
 } from '../../../src/core/ai/agent-services.js';
@@ -941,6 +944,97 @@ describe('validateRequiredResultFile', () => {
     expect(missing).toBeDefined();
     // Check stderr excerpt is surfaced
     expect(JSON.stringify(missing)).toContain('auth failed');
+  });
+});
+
+describe('spec review prompts and parser', () => {
+  it('buildSpecReviewPrompt requires read-only review and JSON result file', () => {
+    const prompt = buildSpecReviewPrompt({
+      artifact_path: '/ws/context-human/specs/enhancement-x.md',
+      artifact_kind: 'feature_spec',
+      working_directory: '/ws',
+      result_path: '/ws/.autocatalyst/spec-review-result.json',
+      template_conformance: true,
+      current_page_markdown: '# Published copy',
+    });
+
+    expect(prompt).toContain('Do NOT edit any files');
+    expect(prompt).toContain('/ws/.autocatalyst/spec-review-result.json');
+    expect(prompt).toContain('Completeness');
+    expect(prompt).toContain('Template conformance');
+    expect(prompt).toContain('canonical fields `created`, `last_updated`, `status`, `issue`, `specced_by`, `implemented_by`, and `superseded_by`');
+    expect(prompt).toContain('"status": "no_findings" | "findings" | "failed"');
+  });
+
+  it('buildSpecAuthorResponsePrompt includes every finding and normal response contract', () => {
+    const prompt = buildSpecAuthorResponsePrompt({
+      artifact_path: '/ws/context-human/specs/enhancement-x.md',
+      working_directory: '/ws',
+      result_path: '/ws/.autocatalyst/spec-review-author-response.json',
+      findings: [
+        { id: 'SPEC-1', severity: 'warning', category: 'clarity', finding: 'Acceptance criteria are vague.' },
+      ],
+    });
+
+    expect(prompt).toContain('[SPEC_REVIEW_ID: SPEC-1]');
+    expect(prompt).toContain('"disposition": "fixed" | "declined" | "needs_input"');
+    expect(prompt).toContain('Include one response entry per [SPEC_REVIEW_ID:] finding');
+  });
+
+  it('buildSpecAuthorResponsePrompt includes full rewrite flow for template conformance findings', () => {
+    const prompt = buildSpecAuthorResponsePrompt({
+      artifact_path: '/ws/context-human/specs/enhancement-x.md',
+      working_directory: '/ws',
+      result_path: '/ws/.autocatalyst/spec-review-author-response.json',
+      findings: [
+        { id: 'SPEC-1', severity: 'blocker', category: 'template_conformance', finding: 'Wrong template.', requires_full_rewrite: true },
+      ],
+    });
+
+    expect(prompt).toContain('Write a clean replacement file at `/ws/context-human/specs/enhancement-x-new.md`');
+    expect(prompt).toContain('Delete the malformed original after the replacement is complete');
+    expect(prompt).toContain('Rename the replacement file to the original path');
+    expect(prompt).toContain('Let the `mm:planning` template, not the original malformed structure, determine the new file structure');
+  });
+
+  it('parseSpecReviewResult parses a valid findings result', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'Two issues.',
+      findings: [
+        { id: 'SPEC-1', severity: 'blocker', category: 'template_conformance', finding: 'Wrong fields.', requires_full_rewrite: true },
+      ],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+
+    expect(result.status).toBe('findings');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].requires_full_rewrite).toBe(true);
+  });
+
+  it('parseSpecReviewResult degrades invalid JSON to failed', () => {
+    const result = parseSpecReviewResult('{bad json', '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('not valid JSON');
+  });
+
+  it('parseSpecReviewResult rejects no_findings with findings', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'no_findings',
+      summary: 'ok',
+      findings: [{ id: 'SPEC-1', severity: 'info', category: 'clarity', finding: 'x' }],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('no_findings must include an empty findings array');
+  });
+
+  it('parseSpecReviewResult rejects requires_full_rewrite outside template_conformance', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'bad',
+      findings: [{ id: 'SPEC-1', severity: 'blocker', category: 'clarity', finding: 'x', requires_full_rewrite: true }],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('requires_full_rewrite may only be true for template_conformance findings');
   });
 });
 

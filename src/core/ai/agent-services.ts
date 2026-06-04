@@ -32,11 +32,14 @@ import type {
   IssueTriageItem,
   IssueTriageResult,
   QuestionAnsweringAgent,
+  SpecReviewFinding,
+  SpecReviewResult,
 } from '../../types/ai.js';
 import type { Request, ThreadMessage } from '../../types/events.js';
 import type { FilingResult, FiledIssue, IssueFiler } from '../../types/issue-filing.js';
 import type { IssueManager } from '../../types/issue-tracker.js';
 import { artifactKindForIntent } from '../../types/artifact.js';
+import type { ArtifactKind } from '../../types/artifact.js';
 import type { ArtifactCommentAnchorCodec } from '../../types/publisher.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
@@ -1632,6 +1635,214 @@ export function buildImplementerResponsePrompt(
     ``,
     CHECKPOINT_INSTRUCTIONS,
   ].join('\n');
+}
+
+export interface BuildSpecReviewPromptParams {
+  artifact_path: string;
+  artifact_kind: ArtifactKind;
+  working_directory: string;
+  result_path: string;
+  template_conformance: boolean;
+  current_page_markdown?: string;
+}
+
+export interface BuildSpecAuthorResponsePromptParams {
+  artifact_path: string;
+  working_directory: string;
+  result_path: string;
+  findings: SpecReviewFinding[];
+  current_page_markdown?: string;
+}
+
+export function buildSpecReviewPrompt(params: BuildSpecReviewPromptParams): string {
+  const { artifact_path, working_directory, result_path, template_conformance } = params;
+
+  const templateConformanceSection = template_conformance ? [
+    ``,
+    `Template conformance gate:`,
+    `- Frontmatter must include the canonical fields \`created\`, \`last_updated\`, \`status\`, \`issue\`, \`specced_by\`, \`implemented_by\`, and \`superseded_by\`.`,
+    `- Frontmatter must omit non-standard fields such as \`type\`, \`source_issue\`, \`related_specs\`, and \`related_adrs\`.`,
+    `- The top-level heading must follow the artifact type (e.g., \`# Feature: ...\` or \`# Enhancement: ...\`).`,
+    `- Section order must follow the canonical feature or enhancement template used by \`mm:planning\`.`,
+    `- Structural non-conformance: return one high-severity finding with category \`template_conformance\` and \`requires_full_rewrite: true\`.`,
+  ] : [];
+
+  return [
+    `You are an adversarial spec reviewer. Your job is to inspect the spec and find quality issues.`,
+    `Do NOT edit any files. Read only.`,
+    ``,
+    `Spec artifact: ${artifact_path}`,
+    `Working directory: ${working_directory}`,
+    ``,
+    `Inspect nearby repository context (e.g., \`context-human/specs\`) only as needed.`,
+    `Treat \`context-human/specs\` and \`mm:planning\` structure as the source of template expectations.`,
+    ``,
+    `Review dimensions:`,
+    `1. Completeness — required sections are present and contain substantive content.`,
+    `2. Clarity — requirements are specific enough for an implementation agent to act without inferring core behavior.`,
+    `3. Testability — acceptance criteria and testing guidance are measurable and runnable by an agent.`,
+    `4. Implementation feasibility — proposed behavior has enough edge-case detail to implement safely.`,
+    `5. Consistency — no contradictory requirements, mismatched scope, or stale copied content.`,
+    `6. Template conformance — frontmatter, section order, and staged structure match \`mm:planning\` expectations.`,
+    ...templateConformanceSection,
+    ``,
+    `Write your result to: ${result_path}`,
+    `Content must be:`,
+    `{`,
+    `  "status": "no_findings" | "findings" | "failed",`,
+    `  "summary": "1-2 sentence summary of review outcome",`,
+    `  "findings": [`,
+    `    {`,
+    `      "id": "SPEC-1",`,
+    `      "severity": "blocker" | "warning" | "info",`,
+    `      "category": "completeness" | "clarity" | "testability" | "feasibility" | "consistency" | "template_conformance",`,
+    `      "finding": "concise description",`,
+    `      "suggested_action": "optional action",`,
+    `      "requires_full_rewrite": true  // only for template_conformance findings`,
+    `    }`,
+    `  ],`,
+    `  "error": "only when status is failed"`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- Do NOT include secrets, API keys, env values, or raw credential values in findings.`,
+    `- Do NOT include your reasoning chain or full prompt in findings.`,
+    `- Do NOT edit any files in the workspace.`,
+    `- Use sequential IDs: SPEC-1, SPEC-2, etc.`,
+    `- If no issues found, use status: "no_findings" with empty findings array.`,
+    `- \`requires_full_rewrite\` may be true only for \`template_conformance\` findings.`,
+    `- Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildSpecAuthorResponsePrompt(params: BuildSpecAuthorResponsePromptParams): string {
+  const { artifact_path, working_directory, result_path, findings } = params;
+  const hasFullRewrite = findings.some(f => f.requires_full_rewrite);
+
+  // Derive the -new.md path
+  const newArtifactPath = artifact_path.replace(/\.md$/, '-new.md');
+
+  const findingBlocks = findings.map(f => [
+    `[SPEC_REVIEW_ID: ${f.id}]`,
+    `Severity: ${f.severity}`,
+    `Category: ${f.category}`,
+    `Finding: ${f.finding}`,
+    ...(f.suggested_action ? [`Suggested action: ${f.suggested_action}`] : []),
+    ...(f.requires_full_rewrite ? [`Requires full rewrite: true`] : []),
+  ].join('\n'));
+
+  const rewriteInstructions = hasFullRewrite ? [
+    ``,
+    `FULL REWRITE REQUIRED for template_conformance finding(s):`,
+    `1. Walk through \`mm:planning\` from first principles.`,
+    `2. Write a clean replacement file at \`${newArtifactPath}\`.`,
+    `3. Use only the original draft's content to answer questions that would normally require human input.`,
+    `4. Let the \`mm:planning\` template, not the original malformed structure, determine the new file structure.`,
+    `5. Delete the malformed original after the replacement is complete.`,
+    `6. Rename the replacement file to the original path.`,
+  ] : [];
+
+  return [
+    `Spec review findings require your response.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    `Spec artifact: ${artifact_path}`,
+    `Working directory: ${working_directory}`,
+    ``,
+    `Review findings:`,
+    ``,
+    findingBlocks.join('\n\n'),
+    ...rewriteInstructions,
+    ``,
+    `For each [SPEC_REVIEW_ID: ...] finding, respond with one of:`,
+    `- \`fixed\`: You changed the spec and explain what changed.`,
+    `- \`declined\`: You leave the spec unchanged and give a concrete reason (not "no action needed").`,
+    `- \`needs_input\`: You cannot resolve without a human decision — provide a specific question.`,
+    ``,
+    `Do not remove human comments or Notion comment spans from page_content.`,
+    `Preserve user-approved product intent. Make the smallest safe content changes unless a full rewrite is required.`,
+    ``,
+    `Write the result to: ${result_path}`,
+    `Content must be:`,
+    `{`,
+    `  "status": "complete" | "needs_input" | "failed",`,
+    `  "responses": [`,
+    `    {`,
+    `      "id": "<exact SPEC_REVIEW_ID value>",`,
+    `      "disposition": "fixed" | "declined" | "needs_input",`,
+    `      "response": "what changed or concrete reason"`,
+    `    }`,
+    `  ],`,
+    `  "question": "only when needs_input",`,
+    `  "error": "only when failed"`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- Include one response entry per [SPEC_REVIEW_ID:] finding.`,
+    `- "declined" responses must include a concrete reason, not just "no action needed".`,
+    `- Use exact ID strings — do not modify or guess IDs.`,
+    `- Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function parseSpecReviewResult(content: string, path: string): SpecReviewResult {
+  let obj: Record<string, unknown>;
+  try {
+    const data = JSON.parse(content);
+    if (typeof data !== 'object' || data === null) {
+      return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}" is not a JSON object` };
+    }
+    obj = data as Record<string, unknown>;
+  } catch (err) {
+    return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}" is not valid JSON: ${String(err)}` };
+  }
+
+  const rawStatus = obj['status'];
+  if (rawStatus !== 'no_findings' && rawStatus !== 'findings' && rawStatus !== 'failed') {
+    return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}" has invalid status: "${String(rawStatus)}"` };
+  }
+
+  const findings: SpecReviewFinding[] = [];
+  if (Array.isArray(obj['findings'])) {
+    for (const raw of obj['findings'] as unknown[]) {
+      if (typeof raw !== 'object' || raw === null) continue;
+      const f = raw as Record<string, unknown>;
+      if (typeof f['id'] === 'string' && typeof f['severity'] === 'string' && typeof f['category'] === 'string' && typeof f['finding'] === 'string') {
+        findings.push({
+          id: f['id'],
+          severity: f['severity'] as SpecReviewFinding['severity'],
+          category: f['category'] as SpecReviewFinding['category'],
+          finding: f['finding'],
+          ...(typeof f['suggested_action'] === 'string' ? { suggested_action: f['suggested_action'] } : {}),
+          ...(f['requires_full_rewrite'] === true ? { requires_full_rewrite: true } : {}),
+        });
+      }
+    }
+  }
+
+  // Validate: no_findings must have empty findings array
+  if (rawStatus === 'no_findings' && findings.length > 0) {
+    return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}": no_findings must include an empty findings array` };
+  }
+
+  // Validate: requires_full_rewrite only for template_conformance
+  for (const finding of findings) {
+    if (finding.requires_full_rewrite && finding.category !== 'template_conformance') {
+      return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}": requires_full_rewrite may only be true for template_conformance findings` };
+    }
+  }
+
+  return {
+    status: rawStatus,
+    summary: typeof obj['summary'] === 'string' ? obj['summary'] : '',
+    findings,
+    ...(typeof obj['error'] === 'string' ? { error: obj['error'] } : {}),
+  };
 }
 
 export function parseImplementationReviewResult(content: string, path: string): ImplementationReviewResult {

@@ -305,4 +305,43 @@ export interface IssueTriageResult {
   error?: string;
 }
 
+export type SpecReviewFindingSeverity = 'blocker' | 'warning' | 'info';
+export type SpecReviewFindingCategory =
+  | 'completeness'
+  | 'clarity'
+  | 'testability'
+  | 'feasibility'
+  | 'consistency'
+  | 'template_conformance';
+
+export interface SpecReviewFinding {
+  id: string;
+  severity: SpecReviewFindingSeverity;
+  category: SpecReviewFindingCategory;
+  finding: string;
+  suggested_action?: string;
+  requires_full_rewrite?: boolean;
+}
+
+export interface SpecReviewResult {
+  status: 'no_findings' | 'findings' | 'failed';
+  summary: string;
+  findings: SpecReviewFinding[];
+  error?: string;
+}
+
+export interface SpecReviewResponseItem {
+  id: string;
+  disposition: 'fixed' | 'declined' | 'needs_input';
+  response: string;
+}
+
+export interface SpecReviewAuthorResponseResult {
+  status: 'complete' | 'needs_input' | 'failed';
+  responses: SpecReviewResponseItem[];
+  page_content?: string;
+  question?: string;
+  error?: string;
+}
+
 export type { ClassificationContext, Intent, IntentClassifier };
