@@ -7,6 +7,7 @@ import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { requireArtifactRefs } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
+import type { SpecReviewCoordinator } from '../ai/spec-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 export interface ArtifactFeedbackDeps {
@@ -20,6 +21,7 @@ export interface ArtifactFeedbackDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'debug' | 'warn' | 'error' | 'info'>;
   branchGuard?: BranchGuard;
+  specReviewCoordinator?: Pick<SpecReviewCoordinator, 'runSpecReview'>;
 }
 
 export type ArtifactFeedbackResult = { status: 'revised' } | { status: 'failed' };
@@ -96,8 +98,43 @@ export class ArtifactFeedbackHandler {
       'Comment responses returned from revise()',
     );
 
+    // Spec review (feature_spec only, after branch guard, before publish)
+    let reviewedPageContent = page_content;
+    if (refs.artifact.kind === 'feature_spec' && this.deps.specReviewCoordinator) {
+      const reviewResult = await this.deps.specReviewCoordinator.runSpecReview({
+        run,
+        artifact_path: refs.local_path,
+        working_directory: run.workspace_path,
+        artifact_kind: refs.artifact.kind,
+        current_page_markdown: pageMarkdown,
+        onProgress: (message: string) => this.deps.postMessage(feedback.conversation, message).catch(err => {
+          this.deps.logger.warn(
+            { event: 'progress_failed', phase: 'spec_review', run_id: run.id, error: String(err) },
+            'Failed to post spec review progress update',
+          );
+        }),
+        onAgentRequest,
+      });
+
+      if (reviewResult.status !== 'complete') {
+        await this.deps.failRun(run, feedback.conversation, new Error(reviewResult.question ?? reviewResult.error ?? 'Spec review did not complete'));
+        return { status: 'failed' };
+      }
+      if (reviewResult.page_content) reviewedPageContent = reviewResult.page_content;
+
+      // Second branch guard after review-driven edits
+      if (this.deps.branchGuard) {
+        try {
+          await this.deps.branchGuard.check(run.workspace_path, run.branch);
+        } catch (err) {
+          await this.deps.failRun(run, feedback.conversation, err);
+          return { status: 'failed' };
+        }
+      }
+    }
+
     try {
-      await this.deps.artifactPublisher.updateArtifact(refs.publication_ref, refs.artifact, page_content);
+      await this.deps.artifactPublisher.updateArtifact(refs.publication_ref, refs.artifact, reviewedPageContent);
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };

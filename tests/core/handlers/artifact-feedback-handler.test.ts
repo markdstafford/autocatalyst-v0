@@ -62,6 +62,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactFee
     },
     feedbackSource: undefined,
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
+    specReviewCoordinator: undefined as undefined | { runSpecReview: ReturnType<typeof vi.fn> },
     postMessage: vi.fn().mockResolvedValue(undefined),
     transition: vi.fn((run: Run, stage: Run['stage']) => { run.stage = stage; }),
     failRun: vi.fn().mockResolvedValue(undefined),
@@ -275,6 +276,99 @@ describe('ArtifactFeedbackHandler', () => {
       expect.objectContaining({ event: 'run.agent_request_recorded', run_id: 'run-001' }),
       expect.any(String),
     );
+  });
+
+  describe('spec review integration', () => {
+    it('runs spec review after branch guard and before updateArtifact', async () => {
+      const callOrder: string[] = [];
+      const branchGuardCheck = vi.fn().mockImplementation(async () => { callOrder.push('branchGuard'); });
+      const runSpecReview = vi.fn().mockImplementation(async () => {
+        callOrder.push('specReview');
+        return { status: 'complete', artifact_path: '/ws/request-001/context-human/specs/feature-test.md' };
+      });
+      const updateArtifact = vi.fn().mockImplementation(async () => { callOrder.push('updateArtifact'); });
+      const { handler } = makeHandler({
+        branchGuard: { check: branchGuardCheck },
+        specReviewCoordinator: { runSpecReview },
+        artifactAuthoringAgent: {
+          revise: vi.fn().mockImplementation(async () => { callOrder.push('revise'); return { comment_responses: [], page_content: '# Revised' }; }),
+        },
+        artifactPublisher: {
+          updateArtifact,
+          updateStatus: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      const run = makeRun();
+      const result = await handler.handle(run, makeFeedback());
+      expect(result).toEqual({ status: 'revised' });
+      expect(callOrder).toEqual(['revise', 'branchGuard', 'specReview', 'branchGuard', 'updateArtifact']);
+      expect(runSpecReview).toHaveBeenCalledWith(expect.objectContaining({
+        artifact_kind: 'feature_spec',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        working_directory: '/ws/request-001',
+      }));
+    });
+
+    it('uses page_content from review result in updateArtifact when provided', async () => {
+      const runSpecReview = vi.fn().mockResolvedValue({
+        status: 'complete',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        page_content: '# Reviewed Content',
+      });
+      const updateArtifact = vi.fn().mockResolvedValue(undefined);
+      const { handler } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+        artifactAuthoringAgent: {
+          revise: vi.fn().mockResolvedValue({ comment_responses: [], page_content: '# Original Revised' }),
+        },
+        artifactPublisher: {
+          updateArtifact,
+          updateStatus: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      const run = makeRun();
+      await handler.handle(run, makeFeedback());
+
+      expect(updateArtifact).toHaveBeenCalledWith(
+        'CANVAS001',
+        expect.any(Object),
+        '# Reviewed Content',
+      );
+    });
+
+    it('does not call updateArtifact when review returns needs_input', async () => {
+      const runSpecReview = vi.fn().mockResolvedValue({
+        status: 'needs_input',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        question: 'clarify scope',
+      });
+      const { handler, deps } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+      });
+      const run = makeRun();
+      const result = await handler.handle(run, makeFeedback());
+
+      expect(result).toEqual({ status: 'failed' });
+      expect(deps.artifactPublisher.updateArtifact).not.toHaveBeenCalled();
+      expect(deps.failRun).toHaveBeenCalled();
+    });
+
+    it('does not call updateArtifact when review returns failed', async () => {
+      const runSpecReview = vi.fn().mockResolvedValue({
+        status: 'failed',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        error: 'review error',
+      });
+      const { handler, deps } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+      });
+      const run = makeRun();
+      const result = await handler.handle(run, makeFeedback());
+
+      expect(result).toEqual({ status: 'failed' });
+      expect(deps.artifactPublisher.updateArtifact).not.toHaveBeenCalled();
+      expect(deps.failRun).toHaveBeenCalled();
+    });
   });
 
   it('does not fail the run when replying to a publisher comment or notifying the channel fails', async () => {
