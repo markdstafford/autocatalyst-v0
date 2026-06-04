@@ -8,7 +8,7 @@ import { App } from '@slack/bolt';
 import Anthropic from '@anthropic-ai/sdk';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveAiConfig, getImplementationReviewPolicy, type ResolvedAiConfig } from '../core/config.js';
+import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveAiConfig, getImplementationReviewPolicy, getSpecReviewPolicy, type ResolvedAiConfig } from '../core/config.js';
 import { bootstrapWorkflowRuntime } from '../core/bootstrap.js';
 import { normalizeWorkflowConfig } from '../core/config-normalizer.js';
 import { configExists, runInit } from '../core/init.js';
@@ -50,6 +50,7 @@ import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, Ag
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 import { ImplementationReviewCoordinator } from '../core/ai/implementation-review-coordinator.js';
+import { SpecReviewCoordinator } from '../core/ai/spec-review-coordinator.js';
 import { createLogger } from '../core/logger.js';
 import { WorkspacePruner } from '../core/workspace-pruner.js';
 import { CommandConfirmationRegistryImpl } from '../core/command-confirmations.js';
@@ -187,6 +188,14 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     logger,
   });
 
+  const specReviewCoordinator = new SpecReviewCoordinator({
+    runner: agentRunner,
+    artifactAuthoringAgent,
+    routingPolicy: aiRoutingPolicy,
+    policy: getSpecReviewPolicy(currentConfig.config),
+    logger,
+  });
+
   const threadPruner = new SlackThreadPruner(boltApp);
   const workspacePruner = new WorkspacePruner();
   const pruneLogger = createLogger('prune-commands');
@@ -213,6 +222,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     channelRepoMap,
     reacjiComplete,
     reviewCoordinator,
+    specReviewCoordinator,
     threadPruner,
     workspacePruner,
     confirmationRegistry,

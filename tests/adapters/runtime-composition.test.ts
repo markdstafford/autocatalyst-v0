@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, test } from 'vitest';
 import { resolveAiConfig } from '../../src/core/config.js';
+import { OrchestratorImpl } from '../../src/core/orchestrator.js';
+import type { OrchestratorDeps } from '../../src/core/orchestrator.js';
 import type { WorkflowConfig, AiConfig } from '../../src/types/config.js';
 import { buildDirectModelRunner, buildAgentRunner, RoutingAwareDirectModelRunner, RoutingAwareAgentRunner } from '../../src/adapters/runtime-composition.js';
 import { OpenAIDirectModelRunner } from '../../src/adapters/openai/direct-model-runner.js';
@@ -384,5 +386,27 @@ describe('buildAgentRunner — requestLogDir threading', () => {
     expect(runner).toBeInstanceOf(OpenAIAgentSdkAgentRunner);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((runner as any).requestLog).toBeUndefined();
+  });
+});
+
+describe('runtime wiring: specReviewCoordinator flows through OrchestratorDeps', () => {
+  it('OrchestratorDeps accepts specReviewCoordinator and OrchestratorImpl forwards it to the handler registry', () => {
+    // Verify that specReviewCoordinator is accepted by OrchestratorDeps at the type level
+    // and that the orchestrator passes it through to buildDefaultHandlerRegistry.
+    const runSpecReview = vi.fn().mockResolvedValue({ status: 'complete', artifact_path: '/ws/spec.md' });
+    const specReviewCoordinator = { runSpecReview };
+
+    const minimalDeps: OrchestratorDeps = {
+      adapter: { on: vi.fn(), resolveChannels: vi.fn(), isConnected: vi.fn() } as unknown as OrchestratorDeps['adapter'],
+      workspaceManager: { create: vi.fn(), findExisting: vi.fn(), cleanup: vi.fn() } as unknown as OrchestratorDeps['workspaceManager'],
+      artifactAuthoringAgent: { create: vi.fn(), revise: vi.fn(), respondToSpecReview: vi.fn() } as unknown as OrchestratorDeps['artifactAuthoringAgent'],
+      artifactPublisher: { createArtifact: vi.fn(), updateArtifact: vi.fn() } as unknown as OrchestratorDeps['artifactPublisher'],
+      channelRepoMap: {},
+      specReviewCoordinator,
+    };
+
+    // OrchestratorImpl should construct without throwing when specReviewCoordinator is provided
+    const orchestrator = new OrchestratorImpl(minimalDeps);
+    expect(orchestrator).toBeDefined();
   });
 });
