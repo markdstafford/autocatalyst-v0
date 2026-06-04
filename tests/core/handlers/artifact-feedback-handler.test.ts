@@ -353,6 +353,39 @@ describe('ArtifactFeedbackHandler', () => {
       expect(deps.failRun).toHaveBeenCalled();
     });
 
+    it('uses reviewed page_content over revise page_content when review finds issues and author responds', async () => {
+      // Scenario: revise() returns page_content (from anchor codec), then spec review finds issues,
+      // respondToSpecReview edits the artifact and returns updated page_content. updateArtifact must
+      // receive the reviewed page_content, not the stale pre-review page_content from revise().
+      const runSpecReview = vi.fn().mockResolvedValue({
+        status: 'complete',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        page_content: '# Reviewed + Anchors Preserved',
+      });
+      const updateArtifact = vi.fn().mockResolvedValue(undefined);
+      const { handler } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+        artifactAuthoringAgent: {
+          revise: vi.fn().mockResolvedValue({
+            comment_responses: [],
+            page_content: '# Stale Pre-Review With Anchors',
+          }),
+        },
+        artifactPublisher: {
+          updateArtifact,
+          updateStatus: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      const run = makeRun();
+      await handler.handle(run, makeFeedback());
+
+      expect(updateArtifact).toHaveBeenCalledWith(
+        'CANVAS001',
+        expect.any(Object),
+        '# Reviewed + Anchors Preserved',
+      );
+    });
+
     it('does not call updateArtifact when review returns failed', async () => {
       const runSpecReview = vi.fn().mockResolvedValue({
         status: 'failed',

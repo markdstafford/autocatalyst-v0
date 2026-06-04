@@ -269,7 +269,10 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     onProgress?: (message: string) => Promise<void>,
     telemetry?: AgentServiceTelemetry,
   ): Promise<SpecReviewAuthorResponseResult> {
-    void current_page_markdown;
+    const originalAnchors = current_page_markdown && this.commentAnchorCodec
+      ? this.commentAnchorCodec.extract(current_page_markdown)
+      : [];
+    const hasAnchors = originalAnchors.length > 0;
     const resultPath = join(workspace_path, '.autocatalyst', 'spec-review-author-response.json');
     const route = {
       task: 'artifact.revise' as const,
@@ -325,7 +328,16 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       request_id: telemetry?.request_id,
       drainSummary,
     });
-    return parseSpecAuthorResponseResult(content, resultPath);
+    const parsed = parseSpecAuthorResponseResult(content, resultPath);
+
+    if (hasAnchors && this.commentAnchorCodec && parsed.status === 'complete') {
+      const agentArtifact = readFileSync(artifact_path, 'utf-8');
+      const pageContent = this.commentAnchorCodec.preserve(agentArtifact, originalAnchors);
+      writeFileSync(artifact_path, this.commentAnchorCodec.strip(pageContent), 'utf-8');
+      return { ...parsed, page_content: pageContent };
+    }
+
+    return parsed;
   }
 }
 
@@ -1918,12 +1930,20 @@ export function parseSpecReviewResult(content: string, path: string): SpecReview
     return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}" has invalid status: "${String(rawStatus)}"` };
   }
 
+  const VALID_SEVERITIES = new Set<string>(['blocker', 'warning', 'info']);
+  const VALID_CATEGORIES = new Set<string>(['completeness', 'clarity', 'testability', 'feasibility', 'consistency', 'template_conformance']);
+
   const findings: SpecReviewFinding[] = [];
   if (Array.isArray(obj['findings'])) {
     for (const raw of obj['findings'] as unknown[]) {
       if (typeof raw !== 'object' || raw === null) continue;
       const f = raw as Record<string, unknown>;
-      if (typeof f['id'] === 'string' && typeof f['severity'] === 'string' && typeof f['category'] === 'string' && typeof f['finding'] === 'string') {
+      if (
+        typeof f['id'] === 'string' &&
+        typeof f['severity'] === 'string' && VALID_SEVERITIES.has(f['severity']) &&
+        typeof f['category'] === 'string' && VALID_CATEGORIES.has(f['category']) &&
+        typeof f['finding'] === 'string'
+      ) {
         findings.push({
           id: f['id'],
           severity: f['severity'] as SpecReviewFinding['severity'],
@@ -1939,6 +1959,11 @@ export function parseSpecReviewResult(content: string, path: string): SpecReview
   // Validate: no_findings must have empty findings array
   if (rawStatus === 'no_findings' && findings.length > 0) {
     return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}": no_findings must include an empty findings array` };
+  }
+
+  // Validate: findings status must include at least one valid finding
+  if (rawStatus === 'findings' && findings.length === 0) {
+    return { status: 'failed', summary: '', findings: [], error: `Spec review result at "${path}": status is 'findings' but no valid findings were parsed` };
   }
 
   // Validate: requires_full_rewrite only for template_conformance
