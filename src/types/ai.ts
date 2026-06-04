@@ -8,6 +8,7 @@ export type AgentTaskKind =
   | 'intent.classify'
   | 'artifact.create'
   | 'artifact.revise'
+  | 'spec.review'
   | 'implementation.plan'
   | 'implementation.run'
   | 'implementation.review.initial'

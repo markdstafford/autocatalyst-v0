@@ -50,4 +50,15 @@ describe('generateDefaultConfig', () => {
     const result = parseAutocatalystConfig(content);
     expect(result.workspace?.auto_prune).toBe(true);
   });
+
+  it('includes spec.review route and spec_review policy', () => {
+    const content = generateDefaultConfig('my-repo');
+    const result = parseAutocatalystConfig(content);
+    expect(result.ai.routing['spec.review']).toBe('review-agent');
+    expect(result.spec_review).toEqual({
+      max_rounds: 1,
+      on_review_failure: 'warn',
+      template_conformance: true,
+    });
+  });
 });

@@ -82,6 +82,7 @@ ai:
     pr.title_generate: grove-gpt-5.4-nano
     artifact.create: grove-gpt-5.5-high
     artifact.revise: grove-gpt-5.5-high
+    spec.review: grove-gpt-5.5-high
     implementation.plan: grove-gpt-5.5-high
     implementation.run: grove-sonnet-4.6-medium
     implementation.review.initial: grove-gpt-5.5-high
@@ -92,6 +93,10 @@ implementation_review:
   max_initial_rounds: 1
   max_final_rounds: 1
   on_review_failure: warn
+spec_review:
+  max_rounds: 1
+  on_review_failure: warn
+  template_conformance: true
 telemetry:
   metrics_endpoint: http://localhost:8428/opentelemetry/v1/metrics
   logs_endpoint: http://localhost:9428/insert/opentelemetry/v1/logs

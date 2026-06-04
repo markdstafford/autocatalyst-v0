@@ -1,7 +1,7 @@
 import { parse as parseYaml } from 'yaml';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, basename, dirname, resolve } from 'node:path';
-import type { WorkflowConfig, LoadedConfig, AiConfig, CredentialConfig, EndpointConfig, ProfileConfig, RoutingConfig } from '../types/config.js';
+import type { WorkflowConfig, LoadedConfig, AiConfig, CredentialConfig, EndpointConfig, ProfileConfig, RoutingConfig, SpecReviewPolicy } from '../types/config.js';
 import { generateDefaultConfig } from '../config/defaults.js';
 
 // ─── Resolved AI config types ─────────────────────────────────────────────────
@@ -182,6 +182,25 @@ export function validateConfig(config: WorkflowConfig): void {
       if (typeof rr['max_final_rounds'] !== 'number' || !Number.isInteger(rr['max_final_rounds']) || (rr['max_final_rounds'] as number) < 1) {
         throw new Error('implementation_review.max_final_rounds must be a positive integer');
       }
+    }
+  }
+
+  const rawSpecReview = (config as Record<string, unknown>)['spec_review'];
+  if (rawSpecReview !== undefined && rawSpecReview !== null) {
+    if (typeof rawSpecReview !== 'object' || Array.isArray(rawSpecReview)) {
+      throw new Error('spec_review must be an object');
+    }
+    const sr = rawSpecReview as Record<string, unknown>;
+    if (sr['on_review_failure'] !== undefined && sr['on_review_failure'] !== 'warn' && sr['on_review_failure'] !== 'block') {
+      throw new Error(`spec_review.on_review_failure must be "warn" or "block", got "${String(sr['on_review_failure'])}"`);
+    }
+    if (sr['max_rounds'] !== undefined) {
+      if (typeof sr['max_rounds'] !== 'number' || !Number.isInteger(sr['max_rounds']) || (sr['max_rounds'] as number) < 1) {
+        throw new Error('spec_review.max_rounds must be a positive integer');
+      }
+    }
+    if (sr['template_conformance'] !== undefined && typeof sr['template_conformance'] !== 'boolean') {
+      throw new Error('spec_review.template_conformance must be a boolean');
     }
   }
 }
@@ -407,5 +426,14 @@ export function getImplementationReviewPolicy(config: WorkflowConfig): {
     max_final_rounds: typeof raw?.['max_final_rounds'] === 'number' ? raw['max_final_rounds'] as number : 1,
     on_review_failure: (raw?.['on_review_failure'] === 'block' ? 'block' : 'warn'),
     retest_on_behavior_change: raw?.['retest_on_behavior_change'] === false ? false : true,
+  };
+}
+
+export function getSpecReviewPolicy(config: WorkflowConfig): Required<SpecReviewPolicy> {
+  const raw = (config as Record<string, unknown>)['spec_review'] as Record<string, unknown> | undefined;
+  return {
+    max_rounds: typeof raw?.['max_rounds'] === 'number' ? raw['max_rounds'] as number : 1,
+    on_review_failure: raw?.['on_review_failure'] === 'block' ? 'block' : 'warn',
+    template_conformance: raw?.['template_conformance'] === false ? false : true,
   };
 }
