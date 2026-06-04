@@ -32,7 +32,9 @@ import type {
   IssueTriageItem,
   IssueTriageResult,
   QuestionAnsweringAgent,
+  SpecReviewAuthorResponseResult,
   SpecReviewFinding,
+  SpecReviewResponseItem,
   SpecReviewResult,
 } from '../../types/ai.js';
 import type { Request, ThreadMessage } from '../../types/events.js';
@@ -258,6 +260,115 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
 
     return { comment_responses: commentResponses };
   }
+
+  async respondToSpecReview(
+    artifact_path: string,
+    workspace_path: string,
+    review_prompt: string,
+    current_page_markdown?: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: AgentServiceTelemetry,
+  ): Promise<SpecReviewAuthorResponseResult> {
+    void current_page_markdown;
+    const resultPath = join(workspace_path, '.autocatalyst', 'spec-review-author-response.json');
+    const route = {
+      task: 'artifact.revise' as const,
+      stage: 'reviewing_spec' as const,
+      intent: 'feedback' as const,
+    };
+
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
+    const progressWithHeartbeat: ((msg: string) => Promise<void>) | undefined =
+      onProgress && telemetry?.onAgentRequest
+        ? async (msg: string) => {
+            notifyAgentRequest(telemetry, profile, route, true);
+            return onProgress(msg);
+          }
+        : onProgress;
+
+    let drainSummary: AgentDrainSummary | undefined;
+    try {
+      await ensureResultDir(resultPath);
+      drainSummary = await drainAgentRunner(
+        this.runner.run({
+          route,
+          profile,
+          working_directory: workspace_path,
+          prompt: review_prompt,
+          telemetry: {
+            phase: 'spec_review_author_response',
+            route_task: route.task,
+            handler: 'AgentRunnerArtifactAuthoringAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
+          },
+        }),
+        progressWithHeartbeat,
+        this.logger,
+        'spec_review_author_response',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
+      );
+    } catch (err) {
+      return { status: 'failed', responses: [], error: `Spec review author response failed: ${String(err)}` };
+    }
+
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultPath,
+      label: 'Spec review author response',
+      logger: this.logger,
+      phase: 'spec_review_author_response',
+      route_task: 'artifact.revise',
+      run_id: telemetry?.run_id,
+      request_id: telemetry?.request_id,
+      drainSummary,
+    });
+    return parseSpecAuthorResponseResult(content, resultPath);
+  }
+}
+
+function parseSpecAuthorResponseResult(content: string, path: string): SpecReviewAuthorResponseResult {
+  let obj: Record<string, unknown>;
+  try {
+    const data = JSON.parse(content);
+    if (typeof data !== 'object' || data === null) {
+      return { status: 'failed', responses: [], error: `Spec author response at "${path}" is not a JSON object` };
+    }
+    obj = data as Record<string, unknown>;
+  } catch (err) {
+    return { status: 'failed', responses: [], error: `Spec author response at "${path}" is not valid JSON: ${String(err)}` };
+  }
+
+  const rawStatus = obj['status'];
+  if (rawStatus !== 'complete' && rawStatus !== 'needs_input' && rawStatus !== 'failed') {
+    return { status: 'failed', responses: [], error: `Spec author response at "${path}" has invalid status: "${String(rawStatus)}"` };
+  }
+
+  const responses: SpecReviewResponseItem[] = [];
+  if (Array.isArray(obj['responses'])) {
+    for (const raw of obj['responses'] as unknown[]) {
+      if (typeof raw !== 'object' || raw === null) continue;
+      const r = raw as Record<string, unknown>;
+      if (
+        typeof r['id'] === 'string' && r['id'].trim() !== '' &&
+        typeof r['disposition'] === 'string' &&
+        (r['disposition'] === 'fixed' || r['disposition'] === 'declined' || r['disposition'] === 'needs_input') &&
+        typeof r['response'] === 'string' && r['response'].trim() !== ''
+      ) {
+        responses.push({ id: r['id'], disposition: r['disposition'], response: r['response'] });
+      }
+    }
+  }
+
+  return {
+    status: rawStatus,
+    responses,
+    ...(typeof obj['page_content'] === 'string' ? { page_content: obj['page_content'] } : {}),
+    ...(typeof obj['question'] === 'string' ? { question: obj['question'] } : {}),
+    ...(typeof obj['error'] === 'string' ? { error: obj['error'] } : {}),
+  };
 }
 
 export class AgentRunnerImplementationAgent implements ImplementationAgent {
@@ -1762,7 +1873,7 @@ export function buildSpecAuthorResponsePrompt(params: BuildSpecAuthorResponsePro
     `- \`declined\`: You leave the spec unchanged and give a concrete reason (not "no action needed").`,
     `- \`needs_input\`: You cannot resolve without a human decision — provide a specific question.`,
     ``,
-    `Do not remove human comments or Notion comment spans from page_content.`,
+    `Do not remove human comments or publisher comment spans from page_content.`,
     `Preserve user-approved product intent. Make the smallest safe content changes unless a full rewrite is required.`,
     ``,
     `Write the result to: ${result_path}`,

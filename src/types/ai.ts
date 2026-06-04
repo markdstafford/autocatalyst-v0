@@ -226,6 +226,14 @@ export interface ArtifactAuthoringAgent {
     onProgress?: (message: string) => Promise<void>,
     telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactRevisionResult>;
+  respondToSpecReview(
+    artifact_path: string,
+    workspace_path: string,
+    review_prompt: string,
+    current_page_markdown?: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: AgentServiceTelemetry,
+  ): Promise<SpecReviewAuthorResponseResult>;
 }
 
 export type ImplementationStatus = 'complete' | 'needs_input' | 'failed';
