@@ -18,6 +18,7 @@ export function requiredSkillsForRoute(route: AgentRoute): AgentSkillRef[] {
     case 'question.answer':
     case 'implementation.review.initial':
     case 'implementation.review.final':
+    case 'spec.review':
       return [];
   }
 }
