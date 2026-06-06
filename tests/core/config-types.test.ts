@@ -2,7 +2,7 @@
  * Type-level tests for AiConfig, CredentialConfig, ProfileConfig, RoutingConfig.
  * Verified at compile time via `tsc --noEmit` — no runtime assertions needed.
  */
-import { describe, it } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { WorkflowConfig, AiConfig, CredentialConfig, EndpointConfig, ProfileConfig, RoutingConfig } from '../../src/types/config.js';
 
 // T1: WorkflowConfig with anthropic api_key credential satisfies the type
@@ -53,5 +53,24 @@ void (null as unknown as RoutingConfig);
 describe('AiConfig and related compile-time types', () => {
   it('type assertions are verified at compile time via tsc --noEmit', () => {
     // All assertions are compile-time only (see module-level constants above).
+  });
+
+  it('accepts spec review route and policy fields', () => {
+    const config: WorkflowConfig = {
+      ai: {
+        credentials: [],
+        endpoints: [],
+        profiles: [],
+        routing: { 'spec.review': 'review-agent' },
+      },
+      spec_review: {
+        max_rounds: 1,
+        on_review_failure: 'warn',
+        template_conformance: true,
+      },
+    };
+
+    expect(config.ai.routing['spec.review']).toBe('review-agent');
+    expect(config.spec_review?.template_conformance).toBe(true);
   });
 });

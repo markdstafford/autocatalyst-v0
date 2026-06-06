@@ -12,6 +12,8 @@ export function requiredSkillsForRoute(route: AgentRoute): AgentSkillRef[] {
       return ['superpowers:writing-plans'];
     case 'implementation.run':
       return ['superpowers:subagent-driven-development'];
+    case 'spec.review':
+      return ['mm:planning'];
     case 'artifact.revise':
     case 'intent.classify':
     case 'pr.title_generate':

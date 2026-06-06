@@ -91,12 +91,18 @@ ai:
     pr.title_generate: classify-haiku
     artifact.create: artifact-agent
     artifact.revise: artifact-agent
+    spec.review: review-agent
     implementation.plan: impl-agent
     implementation.run: impl-agent
     implementation.review.initial: review-agent
     implementation.review.final: review-agent
     question.answer: question-agent
     issue.triage: triage-agent
+
+spec_review:
+  max_rounds: 1
+  on_review_failure: warn
+  template_conformance: true
 
 sandbox:
   env_tokens:

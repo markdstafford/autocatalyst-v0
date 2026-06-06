@@ -339,6 +339,54 @@ describe('buildDefaultHandlerRegistry', () => {
     });
   });
 
+  it('passes specReviewCoordinator through to artifact creation handler', async () => {
+    const runSpecReview = vi.fn().mockResolvedValue({ status: 'complete', artifact_path: '/ws/request-001/spec.md' });
+    const deps = {
+      ...makeDeps(),
+      specReviewCoordinator: { runSpecReview },
+    };
+    (deps.workspaceManager.create as ReturnType<typeof vi.fn>).mockResolvedValue({ workspace_path: '/ws/request-001', branch: 'spec/request-001' });
+    (deps.artifactAuthoringAgent.create as ReturnType<typeof vi.fn>).mockResolvedValue({ artifact_path: '/ws/request-001/spec.md' });
+    (deps.artifactPublisher.createArtifact as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'CANVAS-X', url: 'https://x' });
+
+    const registry = buildDefaultHandlerRegistry(deps);
+    const run = makeRun({ stage: 'new_thread', intent: 'idea' });
+
+    const handler = registry.resolve({ event_type: 'new_request', stage: 'new_thread', intent: 'idea' });
+    const event: InboundEvent = {
+      type: 'new_request',
+      payload: {
+        request_id: 'request-001',
+        channel: run.channel,
+        conversation: run.conversation,
+        origin: run.origin,
+        author: 'U123',
+        content: 'idea',
+        intent: 'idea',
+        received_at: new Date().toISOString(),
+      },
+    };
+    await handler?.(event, run);
+    expect(runSpecReview).toHaveBeenCalled();
+  });
+
+  it('passes specReviewCoordinator through to artifact feedback handler', async () => {
+    const runSpecReview = vi.fn().mockResolvedValue({ status: 'complete', artifact_path: '/ws/request-001/spec.md' });
+    const deps = {
+      ...makeDeps(),
+      specReviewCoordinator: { runSpecReview },
+    };
+    (deps.artifactAuthoringAgent.revise as ReturnType<typeof vi.fn>).mockResolvedValue({ comment_responses: [], page_content: '# Revised' });
+
+    const registry = buildDefaultHandlerRegistry(deps);
+    const run = makeRun();
+    const event: InboundEvent = { type: 'thread_message', payload: makeFeedback({ content: 'tweak this' }) };
+
+    const handler = registry.resolve({ event_type: 'thread_message', stage: 'reviewing_spec', intent: 'feedback' });
+    await handler?.(event, run);
+    expect(runSpecReview).toHaveBeenCalled();
+  });
+
   it('passes the artifact local_path to the implementer after bug triage approval without deleting it', async () => {
     const bugLocalPath = '/ws/request-001/.autocatalyst/triage/triage-bug-login.md';
     const deps = {

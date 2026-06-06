@@ -14,6 +14,11 @@ describe('requiredSkillsForRoute', () => {
     expect(requiredSkillsForRoute({ task: 'implementation.run' })).toEqual(['superpowers:subagent-driven-development']);
   });
 
+  test('maps spec.review to mm:planning so the reviewer has template context', () => {
+    expect(requiredSkillsForRoute({ task: 'spec.review' })).toEqual(['mm:planning']);
+    expect(requiredSkillsForRoute({ task: 'spec.review', artifact_kind: 'feature_spec' })).toEqual(['mm:planning']);
+  });
+
   test('leaves direct and non-skill routes empty', () => {
     expect(requiredSkillsForRoute({ task: 'intent.classify' })).toEqual([]);
     expect(requiredSkillsForRoute({ task: 'pr.title_generate' })).toEqual([]);

@@ -14,6 +14,9 @@ import {
   buildFinalReviewPrompt,
   buildImplementerResponsePrompt,
   parseImplementationReviewResult,
+  buildSpecReviewPrompt,
+  buildSpecAuthorResponsePrompt,
+  parseSpecReviewResult,
   drainAgentRunner,
   validateRequiredResultFile,
 } from '../../../src/core/ai/agent-services.js';
@@ -411,6 +414,79 @@ describe('AgentRunner-backed core AI services', () => {
       expect(codec.preserve).toHaveBeenCalledWith('agent revised content', [{ id: 'anchor-1', text: 'anchored text' }]);
       expect(result.page_content).toBe('PUBLISHED CONTENT WITH ANCHOR');
       await expect(readFile(artifactPath, 'utf8')).resolves.toBe('LOCAL CONTENT WITHOUT ANCHOR');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('respondToSpecReview preserves comment anchors when current_page_markdown has anchors', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-spec-review-author-'));
+    try {
+      const artifactPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      // respondToSpecReview always writes to this known path
+      const resultPath = join(workspace, '.autocatalyst', 'spec-review-author-response.json');
+      const codec: ArtifactCommentAnchorCodec = {
+        extract: vi.fn().mockReturnValue([{ id: 'anchor-1', text: 'anchored text' }]),
+        promptInstructions: vi.fn().mockReturnValue([]),
+        preserve: vi.fn().mockReturnValue('REVIEWED CONTENT WITH ANCHOR'),
+        strip: vi.fn().mockReturnValue('LOCAL CONTENT WITHOUT ANCHOR'),
+      };
+      const runner = fakeAgentRunner(async () => {
+        await mkdir(dirname(resultPath), { recursive: true });
+        await mkdir(dirname(artifactPath), { recursive: true });
+        await writeFile(artifactPath, 'author-edited spec content', 'utf8');
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          responses: [{ id: 'SPEC-1', disposition: 'fixed', response: 'Clarified.' }],
+        }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy(), { commentAnchorCodec: codec });
+
+      const result = await service.respondToSpecReview(
+        artifactPath,
+        workspace,
+        'Address these spec review findings...',
+        'published content with <span data-id="anchor-1">anchored text</span>',
+      );
+
+      expect(codec.extract).toHaveBeenCalledWith('published content with <span data-id="anchor-1">anchored text</span>');
+      expect(codec.preserve).toHaveBeenCalledWith('author-edited spec content', [{ id: 'anchor-1', text: 'anchored text' }]);
+      expect(result.status).toBe('complete');
+      expect(result.page_content).toBe('REVIEWED CONTENT WITH ANCHOR');
+      await expect(readFile(artifactPath, 'utf8')).resolves.toBe('LOCAL CONTENT WITHOUT ANCHOR');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('respondToSpecReview skips anchor preservation when no anchors in current_page_markdown', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-spec-review-author-noanchor-'));
+    try {
+      const artifactPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      const resultPath = join(workspace, '.autocatalyst', 'spec-review-author-response.json');
+      const codec: ArtifactCommentAnchorCodec = {
+        extract: vi.fn().mockReturnValue([]),
+        promptInstructions: vi.fn().mockReturnValue([]),
+        preserve: vi.fn(),
+        strip: vi.fn(),
+      };
+      const runner = fakeAgentRunner(async () => {
+        await mkdir(dirname(resultPath), { recursive: true });
+        await mkdir(dirname(artifactPath), { recursive: true });
+        await writeFile(artifactPath, 'author-edited content', 'utf8');
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          responses: [{ id: 'SPEC-1', disposition: 'fixed', response: 'Fixed it.' }],
+        }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy(), { commentAnchorCodec: codec });
+
+      const result = await service.respondToSpecReview(artifactPath, workspace, 'Address findings...', 'plain page content');
+
+      expect(codec.extract).toHaveBeenCalled();
+      expect(codec.preserve).not.toHaveBeenCalled();
+      expect(result.status).toBe('complete');
+      expect(result.page_content).toBeUndefined();
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -941,6 +1017,148 @@ describe('validateRequiredResultFile', () => {
     expect(missing).toBeDefined();
     // Check stderr excerpt is surfaced
     expect(JSON.stringify(missing)).toContain('auth failed');
+  });
+});
+
+describe('spec review prompts and parser', () => {
+  it('buildSpecReviewPrompt requires read-only review and JSON result file', () => {
+    const prompt = buildSpecReviewPrompt({
+      artifact_path: '/ws/context-human/specs/enhancement-x.md',
+      artifact_kind: 'feature_spec',
+      working_directory: '/ws',
+      result_path: '/ws/.autocatalyst/spec-review-result.json',
+      template_conformance: true,
+      current_page_markdown: '# Published copy',
+    });
+
+    expect(prompt).toContain('Do NOT edit any files');
+    expect(prompt).toContain('/ws/.autocatalyst/spec-review-result.json');
+    expect(prompt).toContain('Completeness');
+    expect(prompt).toContain('Template conformance');
+    expect(prompt).toContain('canonical fields `created`, `last_updated`, `status`, `issue`, `specced_by`, `implemented_by`, and `superseded_by`');
+    expect(prompt).toContain('"status": "no_findings" | "findings" | "failed"');
+  });
+
+  it('buildSpecAuthorResponsePrompt includes every finding and normal response contract', () => {
+    const prompt = buildSpecAuthorResponsePrompt({
+      artifact_path: '/ws/context-human/specs/enhancement-x.md',
+      working_directory: '/ws',
+      result_path: '/ws/.autocatalyst/spec-review-author-response.json',
+      findings: [
+        { id: 'SPEC-1', severity: 'warning', category: 'clarity', finding: 'Acceptance criteria are vague.' },
+      ],
+    });
+
+    expect(prompt).toContain('[SPEC_REVIEW_ID: SPEC-1]');
+    expect(prompt).toContain('"disposition": "fixed" | "declined" | "needs_input"');
+    expect(prompt).toContain('Include one response entry per [SPEC_REVIEW_ID:] finding');
+  });
+
+  it('buildSpecAuthorResponsePrompt includes full rewrite flow for template conformance findings', () => {
+    const prompt = buildSpecAuthorResponsePrompt({
+      artifact_path: '/ws/context-human/specs/enhancement-x.md',
+      working_directory: '/ws',
+      result_path: '/ws/.autocatalyst/spec-review-author-response.json',
+      findings: [
+        { id: 'SPEC-1', severity: 'blocker', category: 'template_conformance', finding: 'Wrong template.', requires_full_rewrite: true },
+      ],
+    });
+
+    expect(prompt).toContain('Write a clean replacement file at `/ws/context-human/specs/enhancement-x-new.md`');
+    expect(prompt).toContain('Delete the malformed original after the replacement is complete');
+    expect(prompt).toContain('Rename the replacement file to the original path');
+    expect(prompt).toContain('Let the `mm:planning` template, not the original malformed structure, determine the new file structure');
+  });
+
+  it('parseSpecReviewResult parses a valid findings result', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'Two issues.',
+      findings: [
+        { id: 'SPEC-1', severity: 'blocker', category: 'template_conformance', finding: 'Wrong fields.', requires_full_rewrite: true },
+      ],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+
+    expect(result.status).toBe('findings');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].requires_full_rewrite).toBe(true);
+  });
+
+  it('parseSpecReviewResult degrades invalid JSON to failed', () => {
+    const result = parseSpecReviewResult('{bad json', '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('not valid JSON');
+  });
+
+  it('parseSpecReviewResult rejects no_findings with findings', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'no_findings',
+      summary: 'ok',
+      findings: [{ id: 'SPEC-1', severity: 'info', category: 'clarity', finding: 'x' }],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('no_findings must include an empty findings array');
+  });
+
+  it('parseSpecReviewResult rejects requires_full_rewrite outside template_conformance', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'bad',
+      findings: [{ id: 'SPEC-1', severity: 'blocker', category: 'clarity', finding: 'x', requires_full_rewrite: true }],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('requires_full_rewrite may only be true for template_conformance findings');
+  });
+
+  it('parseSpecReviewResult silently drops findings with invalid severity', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'Mixed bag.',
+      findings: [
+        { id: 'SPEC-1', severity: 'critical', category: 'clarity', finding: 'invalid severity' },
+        { id: 'SPEC-2', severity: 'blocker', category: 'clarity', finding: 'valid' },
+      ],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('findings');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].id).toBe('SPEC-2');
+  });
+
+  it('parseSpecReviewResult returns failed when status is findings but all findings have invalid severity', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'Bad output.',
+      findings: [
+        { id: 'SPEC-1', severity: 'critical', category: 'clarity', finding: 'bad severity' },
+        { id: 'SPEC-2', severity: 'high', category: 'testability', finding: 'also bad' },
+      ],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain("status is 'findings' but no valid findings were parsed");
+  });
+
+  it('parseSpecReviewResult silently drops findings with invalid category', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'Mixed categories.',
+      findings: [
+        { id: 'SPEC-1', severity: 'blocker', category: 'unknown_category', finding: 'invalid category' },
+        { id: 'SPEC-2', severity: 'warning', category: 'testability', finding: 'valid category' },
+      ],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('findings');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].id).toBe('SPEC-2');
+  });
+
+  it('parseSpecReviewResult returns failed when status is findings with empty findings array', () => {
+    const result = parseSpecReviewResult(JSON.stringify({
+      status: 'findings',
+      summary: 'Something was found.',
+      findings: [],
+    }), '/ws/.autocatalyst/spec-review-result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain("status is 'findings' but no valid findings were parsed");
   });
 });
 

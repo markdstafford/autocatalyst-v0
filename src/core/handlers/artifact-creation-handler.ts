@@ -9,6 +9,7 @@ import type { ChannelRepoMap } from '../../types/config.js';
 import type { WorkspaceManager } from '../workspace-manager.js';
 import { channelKey, type ConversationRef } from '../../types/channel.js';
 import type { BranchGuard } from '../git-branch-guard.js';
+import type { SpecReviewCoordinator } from '../ai/spec-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 
 type ArtifactCreationIntent = Extract<RequestIntent, 'idea' | 'bug' | 'chore'>;
@@ -24,6 +25,7 @@ export interface ArtifactCreationDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'warn' | 'error' | 'info'>;
   branchGuard?: BranchGuard;
+  specReviewCoordinator?: Pick<SpecReviewCoordinator, 'runSpecReview'>;
 }
 
 export class ArtifactCreationHandler {
@@ -87,6 +89,40 @@ export class ArtifactCreationHandler {
         await this.deps.workspaceManager.destroy(workspace_path);
         await this.deps.failRun(run, request.conversation, err);
         return;
+      }
+    }
+
+    // Spec review (idea intent only, after branch guard, before publish)
+    if (intent === 'idea' && this.deps.specReviewCoordinator && run.artifact) {
+      const reviewResult = await this.deps.specReviewCoordinator.runSpecReview({
+        run,
+        artifact_path: local_path,
+        working_directory: workspace_path,
+        artifact_kind: run.artifact.kind,
+        onProgress: (message: string) => this.deps.postMessage(request.conversation, message).catch(err => {
+          this.deps.logger.warn(
+            { event: 'progress_failed', phase: 'spec_review', run_id: run.id, error: String(err) },
+            'Failed to post spec review progress update',
+          );
+        }),
+        onAgentRequest,
+      });
+
+      if (reviewResult.status !== 'complete') {
+        await this.deps.workspaceManager.destroy(workspace_path);
+        await this.deps.failRun(run, request.conversation, new Error(reviewResult.question ?? reviewResult.error ?? 'Spec review did not complete'));
+        return;
+      }
+
+      // Second branch guard after review-driven author edits
+      if (this.deps.branchGuard) {
+        try {
+          await this.deps.branchGuard.check(workspace_path, branch);
+        } catch (err) {
+          await this.deps.workspaceManager.destroy(workspace_path);
+          await this.deps.failRun(run, request.conversation, err);
+          return;
+        }
       }
     }
 

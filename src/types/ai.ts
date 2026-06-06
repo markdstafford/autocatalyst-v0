@@ -8,6 +8,7 @@ export type AgentTaskKind =
   | 'intent.classify'
   | 'artifact.create'
   | 'artifact.revise'
+  | 'spec.review'
   | 'implementation.plan'
   | 'implementation.run'
   | 'implementation.review.initial'
@@ -225,6 +226,14 @@ export interface ArtifactAuthoringAgent {
     onProgress?: (message: string) => Promise<void>,
     telemetry?: AgentServiceTelemetry,
   ): Promise<ArtifactRevisionResult>;
+  respondToSpecReview(
+    artifact_path: string,
+    workspace_path: string,
+    review_prompt: string,
+    current_page_markdown?: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: AgentServiceTelemetry,
+  ): Promise<SpecReviewAuthorResponseResult>;
 }
 
 export type ImplementationStatus = 'complete' | 'needs_input' | 'failed';
@@ -301,6 +310,45 @@ export interface IssueTriageItem {
 export interface IssueTriageResult {
   status: 'complete' | 'failed';
   items: IssueTriageItem[];
+  error?: string;
+}
+
+export type SpecReviewFindingSeverity = 'blocker' | 'warning' | 'info';
+export type SpecReviewFindingCategory =
+  | 'completeness'
+  | 'clarity'
+  | 'testability'
+  | 'feasibility'
+  | 'consistency'
+  | 'template_conformance';
+
+export interface SpecReviewFinding {
+  id: string;
+  severity: SpecReviewFindingSeverity;
+  category: SpecReviewFindingCategory;
+  finding: string;
+  suggested_action?: string;
+  requires_full_rewrite?: boolean;
+}
+
+export interface SpecReviewResult {
+  status: 'no_findings' | 'findings' | 'failed';
+  summary: string;
+  findings: SpecReviewFinding[];
+  error?: string;
+}
+
+export interface SpecReviewResponseItem {
+  id: string;
+  disposition: 'fixed' | 'declined' | 'needs_input';
+  response: string;
+}
+
+export interface SpecReviewAuthorResponseResult {
+  status: 'complete' | 'needs_input' | 'failed';
+  responses: SpecReviewResponseItem[];
+  page_content?: string;
+  question?: string;
   error?: string;
 }
 

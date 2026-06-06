@@ -68,6 +68,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactCre
     },
     persist: vi.fn(),
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
+    specReviewCoordinator: undefined as undefined | { runSpecReview: ReturnType<typeof vi.fn> },
     ...overrides,
   };
 
@@ -230,6 +231,102 @@ describe('ArtifactCreationHandler', () => {
       expect.objectContaining({ event: 'run.agent_request_recorded', run_id: 'run-001' }),
       expect.any(String),
     );
+  });
+
+  describe('spec review integration', () => {
+    it('runs spec review after branch guard and before createArtifact for idea intent', async () => {
+      const callOrder: string[] = [];
+      const branchGuardCheck = vi.fn().mockImplementation(async () => { callOrder.push('branchGuard'); });
+      const runSpecReview = vi.fn().mockImplementation(async () => {
+        callOrder.push('specReview');
+        return { status: 'complete', artifact_path: '/ws/request-001/context-human/specs/feature-test.md' };
+      });
+      const createArtifact = vi.fn().mockImplementation(async () => {
+        callOrder.push('publish');
+        return { id: 'CANVAS001', url: 'https://artifact.example.test/CANVAS001' };
+      });
+      const { handler, deps } = makeHandler({
+        branchGuard: { check: branchGuardCheck },
+        specReviewCoordinator: { runSpecReview },
+        artifactPublisher: {
+          createArtifact,
+          updateStatus: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(callOrder).toEqual(['branchGuard', 'specReview', 'branchGuard', 'publish']);
+      expect(runSpecReview).toHaveBeenCalledWith(expect.objectContaining({
+        artifact_kind: 'feature_spec',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        working_directory: '/ws/request-001',
+      }));
+      expect(deps.failRun).not.toHaveBeenCalled();
+    });
+
+    it('does not call specReviewCoordinator for bug or chore intents', async () => {
+      const runSpecReview = vi.fn();
+      const { handler: bugHandler } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+        artifactAuthoringAgent: {
+          create: vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/bug.md' }),
+        },
+      });
+      await bugHandler.handle(makeRun({ intent: 'bug' }), makeRequest(), 'bug');
+      expect(runSpecReview).not.toHaveBeenCalled();
+
+      const { handler: choreHandler } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+        artifactAuthoringAgent: {
+          create: vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/chore.md' }),
+        },
+      });
+      await choreHandler.handle(makeRun({ intent: 'chore' }), makeRequest(), 'chore');
+      expect(runSpecReview).not.toHaveBeenCalled();
+    });
+
+    it('does not publish when spec review returns needs_input', async () => {
+      const runSpecReview = vi.fn().mockResolvedValue({
+        status: 'needs_input',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        question: 'Need more details',
+      });
+      const { handler, deps } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+      });
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(deps.artifactPublisher.createArtifact).not.toHaveBeenCalled();
+      expect(deps.failRun).toHaveBeenCalled();
+      expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
+    });
+
+    it('does not publish when spec review returns failed', async () => {
+      const runSpecReview = vi.fn().mockResolvedValue({
+        status: 'failed',
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        error: 'review crashed',
+      });
+      const { handler, deps } = makeHandler({
+        specReviewCoordinator: { runSpecReview },
+      });
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(deps.artifactPublisher.createArtifact).not.toHaveBeenCalled();
+      expect(deps.failRun).toHaveBeenCalled();
+    });
+
+    it('skips spec review when specReviewCoordinator is undefined', async () => {
+      const { handler, deps } = makeHandler({ specReviewCoordinator: undefined });
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(deps.artifactPublisher.createArtifact).toHaveBeenCalled();
+      expect(deps.failRun).not.toHaveBeenCalled();
+    });
   });
 
   it('posts no publication link when url is absent', async () => {

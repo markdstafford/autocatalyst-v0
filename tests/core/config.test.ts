@@ -12,6 +12,7 @@ import {
   loadConfig,
   resolveAiConfig,
   getImplementationReviewPolicy,
+  getSpecReviewPolicy,
   isWorkspaceAutoPruneEnabled,
 } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
@@ -474,6 +475,64 @@ describe('getImplementationReviewPolicy', () => {
   it('defaults on_review_failure to warn when not set', () => {
     const policy = getImplementationReviewPolicy({ implementation_review: { max_initial_rounds: 2 } } as unknown as WorkflowConfig);
     expect(policy.on_review_failure).toBe('warn');
+  });
+});
+
+// ─── validateConfig: spec_review ─────────────────────────────────────────────
+
+describe('validateConfig: spec_review', () => {
+  it('passes when spec_review is absent', () => {
+    expect(() => validateConfig({} as WorkflowConfig)).not.toThrow();
+  });
+
+  it('passes for a valid spec_review block', () => {
+    expect(() =>
+      validateConfig({ spec_review: { on_review_failure: 'block', max_rounds: 1, template_conformance: true } } as unknown as WorkflowConfig),
+    ).not.toThrow();
+  });
+
+  it('throws when spec_review is not an object', () => {
+    expect(() =>
+      validateConfig({ spec_review: 'bad' } as unknown as WorkflowConfig),
+    ).toThrow('spec_review must be an object');
+  });
+
+  it('throws when spec_review.on_review_failure is invalid', () => {
+    expect(() =>
+      validateConfig({ spec_review: { on_review_failure: 'ignore' } } as unknown as WorkflowConfig),
+    ).toThrow('spec_review.on_review_failure must be "warn" or "block"');
+  });
+
+  it('throws when spec_review.max_rounds is zero', () => {
+    expect(() =>
+      validateConfig({ spec_review: { max_rounds: 0 } } as unknown as WorkflowConfig),
+    ).toThrow('spec_review.max_rounds must be a positive integer');
+  });
+
+  it('throws when spec_review.template_conformance is not boolean', () => {
+    expect(() =>
+      validateConfig({ spec_review: { template_conformance: 'yes' } } as unknown as WorkflowConfig),
+    ).toThrow('spec_review.template_conformance must be a boolean');
+  });
+});
+
+// ─── getSpecReviewPolicy ──────────────────────────────────────────────────────
+
+describe('getSpecReviewPolicy', () => {
+  it('returns safe defaults when spec_review is absent', () => {
+    expect(getSpecReviewPolicy({} as WorkflowConfig)).toEqual({
+      max_rounds: 1,
+      on_review_failure: 'warn',
+      template_conformance: true,
+    });
+  });
+
+  it('uses configured values', () => {
+    expect(getSpecReviewPolicy({ spec_review: { max_rounds: 2, on_review_failure: 'block', template_conformance: false } } as unknown as WorkflowConfig)).toEqual({
+      max_rounds: 2,
+      on_review_failure: 'block',
+      template_conformance: false,
+    });
   });
 });
 

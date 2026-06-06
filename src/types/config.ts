@@ -59,6 +59,12 @@ export interface ProfileConfig {
 /** Maps AgentTaskKind string keys to ProfileConfig.name values. */
 export type RoutingConfig = Record<string, string>;
 
+export interface SpecReviewPolicy {
+  max_rounds?: number;
+  on_review_failure?: 'warn' | 'block';
+  template_conformance?: boolean;
+}
+
 export interface ImplementationReviewPolicy {
   max_initial_rounds?: number;
   max_final_rounds?: number;
@@ -113,6 +119,7 @@ export interface WorkflowConfig {
   /** Required — declares all AI provider configuration. */
   ai: AiConfig;
   implementation_review?: ImplementationReviewPolicy;
+  spec_review?: SpecReviewPolicy;
   sandbox?: SandboxConfig;
   [key: string]: unknown;
 }

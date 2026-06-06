@@ -19,6 +19,7 @@ import type { SpecCommitter } from './spec-committer.js';
 import { HandlerRegistryImpl, type HandlerRegistry } from './handler-registry.js';
 import { GitBranchGuard, type BranchGuard } from './git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from './ai/implementation-review-coordinator.js';
+import type { SpecReviewCoordinator } from './ai/spec-review-coordinator.js';
 import { ArtifactCreationHandler } from './handlers/artifact-creation-handler.js';
 import { ArtifactApprovalHandler, type ArtifactApprovalResult } from './handlers/artifact-approval-handler.js';
 import { ArtifactFeedbackHandler } from './handlers/artifact-feedback-handler.js';
@@ -96,6 +97,7 @@ export interface DefaultHandlerRegistryDeps {
   logger: Pick<pino.Logger, 'debug' | 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
   reviewCoordinator?: ImplementationReviewCoordinator;
+  specReviewCoordinator?: SpecReviewCoordinator;
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
   workspacePruner?: Pick<WorkspacePruner, 'prune'>;
   autoPruneWorkspace?: boolean;
@@ -189,6 +191,7 @@ async function startArtifactCreation(
     persist: deps.persist,
     logger: deps.logger,
     branchGuard,
+    specReviewCoordinator: deps.specReviewCoordinator,
   });
   await handler.handle(run, request, intent);
 }
@@ -233,6 +236,7 @@ async function handleArtifactFeedback(
     persist: deps.persist,
     logger: deps.logger,
     branchGuard,
+    specReviewCoordinator: deps.specReviewCoordinator,
   });
   await handler.handle(run, feedback);
 }
