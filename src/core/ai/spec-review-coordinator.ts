@@ -209,7 +209,14 @@ export class SpecReviewCoordinator {
       return { status: 'failed', artifact_path, error: authorResponse.error ?? 'Author response failed' };
     }
 
-    this.validateAuthorResponses(run, reviewResult.findings, authorResponse.responses ?? []);
+    const validationErrors = this.validateAuthorResponses(run, reviewResult.findings, authorResponse.responses ?? []);
+    if (validationErrors.length > 0) {
+      return {
+        status: 'failed',
+        artifact_path,
+        error: `Author responses failed validation: ${validationErrors.join('; ')}`,
+      };
+    }
 
     this.deps.logger.info(
       { event: 'spec.review.author_response_completed', run_id: run.id, response_count: authorResponse.responses?.length ?? 0 },
@@ -260,24 +267,73 @@ export class SpecReviewCoordinator {
     run: Run,
     findings: SpecReviewFinding[],
     responses: Array<{ id: string; disposition: string; response: string }>,
-  ): void {
-    const responseIds = new Set(responses.map(r => r.id));
+  ): string[] {
+    const errors: string[] = [];
+    const findingIds = new Set(findings.map(f => f.id));
+    const seenResponseIds = new Set<string>();
+    const validDispositions = new Set(['fixed', 'declined', 'needs_input']);
+
     for (const finding of findings) {
-      if (!responseIds.has(finding.id)) {
+      if (!responses.some(r => r.id === finding.id)) {
+        const msg = `No response for finding ID: ${finding.id}`;
+        errors.push(msg);
         this.deps.logger.warn(
           { event: 'spec.review.response_invalid', run_id: run.id, missing_id: finding.id },
-          `Author did not respond to finding ID: ${finding.id}`,
+          msg,
         );
       }
     }
 
     for (const response of responses) {
-      if (response.disposition === 'declined' && response.response.trim().toLowerCase() === 'no action needed') {
+      if (seenResponseIds.has(response.id)) {
+        const msg = `Duplicate response for finding ID: ${response.id}`;
+        errors.push(msg);
+        this.deps.logger.warn(
+          { event: 'spec.review.response_invalid', run_id: run.id, duplicate_id: response.id },
+          msg,
+        );
+      }
+      seenResponseIds.add(response.id);
+
+      if (!findingIds.has(response.id)) {
+        const msg = `Response references unknown finding ID: ${response.id}`;
+        errors.push(msg);
+        this.deps.logger.warn(
+          { event: 'spec.review.response_invalid', run_id: run.id, unknown_id: response.id },
+          msg,
+        );
+      }
+
+      if (!validDispositions.has(response.disposition)) {
+        const msg = `Invalid disposition '${response.disposition}' for finding ${response.id}`;
+        errors.push(msg);
+        this.deps.logger.warn(
+          { event: 'spec.review.response_invalid', run_id: run.id, invalid_disposition: response.disposition, id: response.id },
+          msg,
+        );
+      }
+
+      if (!response.response?.trim()) {
+        const msg = `Empty response explanation for finding ${response.id}`;
+        errors.push(msg);
+        this.deps.logger.warn(
+          { event: 'spec.review.response_invalid', run_id: run.id, empty_response_id: response.id },
+          msg,
+        );
+      }
+
+      if (response.disposition === 'declined' && !response.response?.trim()) {
+        // already caught by empty response check above
+      } else if (response.disposition === 'declined' && response.response.trim().toLowerCase() === 'no action needed') {
+        const msg = `Finding ${response.id} declined without a concrete reason`;
+        errors.push(msg);
         this.deps.logger.warn(
           { event: 'spec.review.response_invalid', run_id: run.id, invalid_id: response.id },
-          `Author declined finding ${response.id} without a concrete reason`,
+          msg,
         );
       }
     }
+
+    return errors;
   }
 }

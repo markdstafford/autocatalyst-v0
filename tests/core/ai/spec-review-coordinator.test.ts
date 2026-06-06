@@ -227,4 +227,119 @@ describe('SpecReviewCoordinator', () => {
       );
     });
   });
+
+  describe('runSpecReview — author response validation', () => {
+    const findingsWithSpec1 = [
+      { id: 'SPEC-1', severity: 'warning' as const, category: 'clarity' as const, finding: 'Vague.' },
+    ];
+
+    it('returns failed when author response is missing a finding ID', async () => {
+      const d = makeDeps(
+        { status: 'findings', summary: 'Found issue.', findings: findingsWithSpec1 },
+        { artifactAuthoringAgent: makeAuthoringAgent({ status: 'complete', responses: [] }) },
+      );
+      const coordinator = new SpecReviewCoordinator(d);
+      const result = await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('SPEC-1');
+    });
+
+    it('returns failed when author response has duplicate finding IDs', async () => {
+      const d = makeDeps(
+        { status: 'findings', summary: 'Found issue.', findings: findingsWithSpec1 },
+        {
+          artifactAuthoringAgent: makeAuthoringAgent({
+            status: 'complete',
+            responses: [
+              { id: 'SPEC-1', disposition: 'fixed', response: 'Fixed it.' },
+              { id: 'SPEC-1', disposition: 'fixed', response: 'Fixed again.' },
+            ],
+          }),
+        },
+      );
+      const coordinator = new SpecReviewCoordinator(d);
+      const result = await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('Duplicate');
+    });
+
+    it('returns failed when author response references an unknown finding ID', async () => {
+      const d = makeDeps(
+        { status: 'findings', summary: 'Found issue.', findings: findingsWithSpec1 },
+        {
+          artifactAuthoringAgent: makeAuthoringAgent({
+            status: 'complete',
+            responses: [
+              { id: 'SPEC-1', disposition: 'fixed', response: 'Fixed it.' },
+              { id: 'SPEC-99', disposition: 'fixed', response: 'Extra response.' },
+            ],
+          }),
+        },
+      );
+      const coordinator = new SpecReviewCoordinator(d);
+      const result = await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('SPEC-99');
+    });
+
+    it('returns failed when a response has an invalid disposition', async () => {
+      const d = makeDeps(
+        { status: 'findings', summary: 'Found issue.', findings: findingsWithSpec1 },
+        {
+          artifactAuthoringAgent: makeAuthoringAgent({
+            status: 'complete',
+            responses: [{ id: 'SPEC-1', disposition: 'ignored', response: 'Some text.' }],
+          }),
+        },
+      );
+      const coordinator = new SpecReviewCoordinator(d);
+      const result = await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('disposition');
+    });
+
+    it('returns failed when a response has an empty explanation', async () => {
+      const d = makeDeps(
+        { status: 'findings', summary: 'Found issue.', findings: findingsWithSpec1 },
+        {
+          artifactAuthoringAgent: makeAuthoringAgent({
+            status: 'complete',
+            responses: [{ id: 'SPEC-1', disposition: 'fixed', response: '   ' }],
+          }),
+        },
+      );
+      const coordinator = new SpecReviewCoordinator(d);
+      const result = await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('Empty');
+    });
+
+    it('returns failed when a declined response says only "no action needed"', async () => {
+      const d = makeDeps(
+        { status: 'findings', summary: 'Found issue.', findings: findingsWithSpec1 },
+        {
+          artifactAuthoringAgent: makeAuthoringAgent({
+            status: 'complete',
+            responses: [{ id: 'SPEC-1', disposition: 'declined', response: 'no action needed' }],
+          }),
+        },
+      );
+      const coordinator = new SpecReviewCoordinator(d);
+      const result = await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('concrete reason');
+    });
+
+    it('does not call publication (returns failed) when validation fails — proving publication is blocked', async () => {
+      const d = makeDeps(
+        { status: 'findings', summary: 'Found issue.', findings: findingsWithSpec1 },
+        { artifactAuthoringAgent: makeAuthoringAgent({ status: 'complete', responses: [] }) },
+      );
+      const coordinator = new SpecReviewCoordinator(d);
+      const result = await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec' });
+      // Coordinator returns failed; handler tests verify createArtifact is not called when status is failed
+      expect(result.status).toBe('failed');
+      expect(result.page_content).toBeUndefined();
+    });
+  });
 });
