@@ -98,11 +98,19 @@ ai:
     implementation.review.final: review-agent
     question.answer: question-agent
     issue.triage: triage-agent
+    artifact.api.propose: artifact-agent
+    artifact.api.critique: review-agent
 
 spec_review:
   max_rounds: 1
   on_review_failure: warn
   template_conformance: true
+
+spec_authoring:
+  api_convergence:
+    enabled: false
+    max_rounds: 5
+    allow_same_model: false
 
 sandbox:
   env_tokens:

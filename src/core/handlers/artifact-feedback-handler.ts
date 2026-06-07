@@ -1,3 +1,4 @@
+import { readFile, writeFile } from 'node:fs/promises';
 import type pino from 'pino';
 import type { ArtifactAuthoringAgent, AgentSessionCaptureFn } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
@@ -10,6 +11,7 @@ import type { BranchGuard } from '../git-branch-guard.js';
 import type { SpecReviewCoordinator } from '../ai/spec-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
+import { removeConvergedApiSection } from '../ai/authoring-api-artifact.js';
 
 export interface ArtifactFeedbackDeps {
   artifactAuthoringAgent: Pick<ArtifactAuthoringAgent, 'revise'>;
@@ -24,6 +26,8 @@ export interface ArtifactFeedbackDeps {
   branchGuard?: BranchGuard;
   specReviewCoordinator?: Pick<SpecReviewCoordinator, 'runSpecReview'>;
   journal?: Pick<RunJournal, 'captureSession'>;
+  readFile?: (path: string, encoding: 'utf-8') => Promise<string>;
+  writeFile?: (path: string, content: string, encoding: 'utf-8') => Promise<void>;
 }
 
 export type ArtifactFeedbackResult = { status: 'revised' } | { status: 'failed' };
@@ -50,7 +54,7 @@ export class ArtifactFeedbackHandler {
     const publisherComments = await this.fetchPublisherComments(run, feedback, refs.publication_ref);
     if (!publisherComments) return { status: 'failed' };
 
-    const pageMarkdown = await this.getContent(run, refs.publication_ref);
+    let pageMarkdown = await this.getContent(run, refs.publication_ref);
     this.deps.logger.debug({
       event: 'spec_revision.enriched',
       run_id: run.id,
@@ -70,12 +74,53 @@ export class ArtifactFeedbackHandler {
 
     const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
 
+    // Only for feature specs: remove any stale generated ## Converged API section
+    let staleApiRemoved = false;
+    if (refs.artifact.kind === 'feature_spec') {
+      const readFileFn = this.deps.readFile ?? ((p: string, e: 'utf-8') => readFile(p, e));
+      const writeFileFn = this.deps.writeFile ?? ((p: string, c: string, e: 'utf-8') => writeFile(p, c, e));
+      try {
+        const localContent = await readFileFn(refs.local_path, 'utf-8');
+        const cleaned = removeConvergedApiSection(localContent);
+        if (cleaned !== localContent) {
+          await writeFileFn(refs.local_path, cleaned, 'utf-8');
+          staleApiRemoved = true;
+          this.deps.logger.warn({
+            event: 'artifact.api_convergence.stale_section_removed',
+            run_id: run.id,
+            request_id: run.request_id,
+          }, 'Removed stale generated API section before feedback revision');
+        }
+      } catch (err) {
+        this.deps.logger.warn({
+          event: 'artifact.api_convergence.stale_section_cleanup_failed',
+          run_id: run.id,
+          error: String(err),
+        }, 'Failed to check/remove stale converged API section');
+      }
+      // Also clean page markdown independently: the published/anchored markdown may
+      // still contain a stale ## Converged API section even when the local file does not.
+      if (pageMarkdown) {
+        const cleanedPage = removeConvergedApiSection(pageMarkdown);
+        if (cleanedPage !== pageMarkdown) {
+          pageMarkdown = cleanedPage;
+          staleApiRemoved = true;
+          this.deps.logger.warn({
+            event: 'artifact.api_convergence.stale_section_removed',
+            run_id: run.id,
+            request_id: run.request_id,
+            source: 'published_markdown',
+          }, 'Removed stale generated API section from published markdown before feedback revision');
+        }
+      }
+    }
+
     let result;
     try {
       const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
         ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
         : undefined;
-      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession });
+      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession, staleConvergedApiRemoved: staleApiRemoved });
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };

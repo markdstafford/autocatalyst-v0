@@ -37,12 +37,26 @@ export function resolveFeedbackDepth(
   return feedbackDepth ?? 'build_only';
 }
 
-export function resolveImplementationConvergencePolicy(config: WorkflowConfig): ResolvedImplementationConvergencePolicy {
+export function resolveImplementationConvergencePolicy(
+  config: WorkflowConfig,
+  warn?: (warning: object) => void,
+): ResolvedImplementationConvergencePolicy {
   const raw = config.implementation_review?.convergence;
+  const configuredDepth = raw?.depth ?? 'build_only';
+  let effectiveDepth: ImplementationReviewConvergenceDepth = 'build_only';
+  if (configuredDepth !== 'build_only') {
+    warn?.({
+      event: 'implementation_review.convergence.depth_ignored',
+      configured_depth: configuredDepth,
+      effective_behavior: 'build_only',
+    });
+  } else {
+    effectiveDepth = configuredDepth;
+  }
   return {
     enabled: raw?.enabled ?? false,
     allow_same_model: raw?.allow_same_model ?? false,
-    depth: raw?.depth ?? 'build_only',
+    depth: effectiveDepth,
     feedback_depth: raw?.feedback_depth ?? 'build_only',
     max_model_sessions_per_run: raw?.max_model_sessions_per_run ?? 24,
   };

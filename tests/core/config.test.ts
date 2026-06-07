@@ -13,6 +13,7 @@ import {
   resolveAiConfig,
   getImplementationReviewPolicy,
   getSpecReviewPolicy,
+  getSpecAuthoringPolicy,
   isWorkspaceAutoPruneEnabled,
 } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
@@ -706,6 +707,34 @@ describe('implementation_review.convergence layered config', () => {
         },
       },
     })).toThrow('implementation_review.convergence.max_model_sessions_per_run must be a positive integer');
+  });
+});
+
+// ─── getSpecAuthoringPolicy ───────────────────────────────────────────────────
+
+describe('getSpecAuthoringPolicy', () => {
+  const base = { ai: { credentials: [], endpoints: [], profiles: [], routing: {} } } as WorkflowConfig;
+
+  it('defaults authoring API convergence off with five rounds and distinct profiles', () => {
+    expect(getSpecAuthoringPolicy(base)).toEqual({
+      api_convergence: { enabled: false, max_rounds: 5, allow_same_model: false },
+    });
+  });
+
+  it('reads enabled authoring API convergence policy', () => {
+    expect(getSpecAuthoringPolicy({
+      ...base,
+      spec_authoring: { api_convergence: { enabled: true, max_rounds: 3, allow_same_model: true } },
+    })).toEqual({
+      api_convergence: { enabled: true, max_rounds: 3, allow_same_model: true },
+    });
+  });
+
+  it('rejects non-positive max_rounds', () => {
+    expect(() => getSpecAuthoringPolicy({
+      ...base,
+      spec_authoring: { api_convergence: { enabled: true, max_rounds: 0 } },
+    })).toThrow(/spec_authoring\.api_convergence\.max_rounds must be a positive integer/);
   });
 });
 

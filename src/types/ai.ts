@@ -34,7 +34,9 @@ export type AgentTaskKind =
   | 'implementation.review.final'
   | 'question.answer'
   | 'issue.triage'
-  | 'pr.title_generate';
+  | 'pr.title_generate'
+  | 'artifact.api.propose'
+  | 'artifact.api.critique';
 
 export type AgentRole = 'proposer' | 'critic';
 
@@ -63,6 +65,7 @@ export interface AgentServiceTelemetry {
   role?: AgentRole | string;
   round?: number;
   gate?: 'initial' | 'final' | string;
+  staleConvergedApiRemoved?: boolean;
 }
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
@@ -286,6 +289,47 @@ export interface ArtifactCreateResult {
   existing_issue?: number;
 }
 
+export interface ConvergedApiFile {
+  path: string;
+  purpose: string;
+  exports: string[];
+}
+
+export interface ConvergedApiPublicItem {
+  symbol: string;
+  signature: string;
+  parameters: Array<{ name: string; type: string; description: string }>;
+  returns: string;
+  errors: string[];
+}
+
+export interface ConvergedApiTypeItem {
+  name: string;
+  shape: string;
+  description: string;
+}
+
+export interface ConvergedApiArtifact {
+  files: ConvergedApiFile[];
+  public_api: ConvergedApiPublicItem[];
+  types: ConvergedApiTypeItem[];
+  notes: string;
+}
+
+export interface AuthoringApiConvergenceResult {
+  artifact: ConvergedApiArtifact;
+  markdown: string;
+  converged: boolean;
+  non_convergence_reason?: GateNonConvergenceReason;
+}
+
+export interface AuthoringApiCritiqueResult {
+  status: 'no_findings' | 'findings' | 'failed';
+  summary: string;
+  findings: ImplementationReviewFinding[];
+  error?: string;
+}
+
 export interface ArtifactRevisionResult {
   comment_responses: ArtifactCommentResponse[];
   page_content?: string;
@@ -316,6 +360,18 @@ export interface ArtifactAuthoringAgent {
     onProgress?: (message: string) => Promise<void>,
     telemetry?: AgentServiceTelemetry,
   ): Promise<SpecReviewAuthorResponseResult>;
+  createTechSpecDraft?(
+    request: Request,
+    workspace_path: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: AgentServiceTelemetry,
+  ): Promise<ArtifactCreateResult>;
+  decomposeTasks?(
+    artifact_path: string,
+    workspace_path: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: AgentServiceTelemetry,
+  ): Promise<ArtifactCreateResult>;
 }
 
 export type ImplementationStatus = 'complete' | 'needs_input' | 'failed';

@@ -81,6 +81,39 @@ describe('journal types (compile-focused)', () => {
     expect(record.tool_results).toBe(5);
   });
 
+  it('constructs a JournalSessionRecord with authoring_api_convergence metadata', () => {
+    const record: JournalSessionRecord = {
+      seq: 10,
+      writer_id: 'test-writer',
+      session_seq: 2,
+      ts_start: new Date().toISOString(),
+      ts_end: new Date().toISOString(),
+      conversation_id: 'slack:C123:T456',
+      topic_id: 'run-002',
+      run_id: 'run-002',
+      request_id: 'req-002',
+      phase: 'authoring_api_convergence',
+      step: 'artifact.api.critique',
+      role: 'critic',
+      round: 2,
+      gate: 'api',
+      model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+      inference: { effort: null, thinking: null },
+      tokens: null,
+      assistant_turns: null,
+      tool_calls: null,
+      tool_results: null,
+      outcome: 'ok',
+      runner: 'anthropic_agent',
+    };
+
+    expect(record.phase).toBe('authoring_api_convergence');
+    expect(record.step).toBe('artifact.api.critique');
+    expect(record.role).toBe('critic');
+    expect(record.round).toBe(2);
+    expect(record.gate).toBe('api');
+  });
+
   it('constructs a valid JournalFeedbackRecord', () => {
     const record: JournalFeedbackRecord = {
       seq: 3,
@@ -105,6 +138,35 @@ describe('journal types (compile-focused)', () => {
     expect(record.target).toBe('implementation');
     expect(record.severity).toBe('warning');
     expect(record.category).toBe('correctness');
+    expect(record.disposition).toBe('open');
+  });
+
+  it('constructs a JournalFeedbackRecord with api gate artifact metadata', () => {
+    const record: JournalFeedbackRecord = {
+      seq: 11,
+      writer_id: 'test-writer',
+      id: 'fb-api-001',
+      ts_created: new Date().toISOString(),
+      conversation_id: 'slack:C123:T456',
+      topic_id: 'run-002',
+      run_id: 'run-002',
+      request_id: 'req-002',
+      target: 'artifact',
+      gate: 'api',
+      author_principal: 'review:anthropic_agent_sdk:review-agent',
+      text: 'Public method missing return type annotation',
+      anchor: null,
+      severity: 'warning',
+      category: 'maintainability',
+      disposition: 'open',
+      thread: [],
+    };
+
+    expect(record.target).toBe('artifact');
+    expect(record.gate).toBe('api');
+    expect(record.author_principal).toBe('review:anthropic_agent_sdk:review-agent');
+    expect(record.severity).toBe('warning');
+    expect(record.category).toBe('maintainability');
     expect(record.disposition).toBe('open');
   });
 

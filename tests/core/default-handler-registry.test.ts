@@ -14,6 +14,8 @@ const handlerConstructorDeps = vi.hoisted(() => ({
   start: [] as Array<{ convergencePolicy?: unknown; budgetWriter?: unknown }>,
   feedback: [] as Array<{ convergencePolicy?: unknown; budgetWriter?: unknown }>,
   approval: [] as Array<{ convergencePolicy?: unknown; budgetWriter?: unknown }>,
+  artifactCreation: [] as Array<{ specAuthoringPolicy?: unknown; authoringApiConvergenceCoordinator?: unknown }>,
+  artifactFeedback: [] as Array<{ specAuthoringPolicy?: unknown; authoringApiConvergenceCoordinator?: unknown }>,
 }));
 
 vi.mock('../../src/core/handlers/implementation-start-handler.js', async (importActual) => {
@@ -49,6 +51,32 @@ vi.mock('../../src/core/handlers/implementation-approval-handler.js', async (imp
     ImplementationApprovalHandler: class extends actual.ImplementationApprovalHandler {
       constructor(deps: ConstructorParameters<typeof actual.ImplementationApprovalHandler>[0]) {
         handlerConstructorDeps.approval.push(deps);
+        super(deps);
+      }
+    },
+  };
+});
+
+vi.mock('../../src/core/handlers/artifact-creation-handler.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/core/handlers/artifact-creation-handler.js')>();
+  return {
+    ...actual,
+    ArtifactCreationHandler: class extends actual.ArtifactCreationHandler {
+      constructor(deps: ConstructorParameters<typeof actual.ArtifactCreationHandler>[0]) {
+        handlerConstructorDeps.artifactCreation.push(deps);
+        super(deps);
+      }
+    },
+  };
+});
+
+vi.mock('../../src/core/handlers/artifact-feedback-handler.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/core/handlers/artifact-feedback-handler.js')>();
+  return {
+    ...actual,
+    ArtifactFeedbackHandler: class extends actual.ArtifactFeedbackHandler {
+      constructor(deps: ConstructorParameters<typeof actual.ArtifactFeedbackHandler>[0]) {
+        handlerConstructorDeps.artifactFeedback.push(deps);
         super(deps);
       }
     },
@@ -537,6 +565,68 @@ describe('buildDefaultHandlerRegistry', () => {
       expect(handlerConstructorDeps.approval.length).toBeGreaterThan(0);
       expect(handlerConstructorDeps.approval.at(-1)?.convergencePolicy).toBe(convergencePolicy);
       expect(handlerConstructorDeps.approval.at(-1)?.budgetWriter).toBe(budgetWriter);
+    });
+  });
+
+  // Wiring guard: authoring API convergence deps must flow to ArtifactCreationHandler
+  // but must NOT bleed into ArtifactFeedbackHandler (which runs the revise path, not create).
+  describe('forwards specAuthoringPolicy and authoringApiConvergenceCoordinator', () => {
+    it('passes both deps to ArtifactCreationHandler when provided', async () => {
+      handlerConstructorDeps.artifactCreation.length = 0;
+      const specAuthoringPolicy = { api_convergence: { enabled: true, max_rounds: 3, allow_same_model: false } };
+      const authoringApiConvergenceCoordinator = { run: vi.fn() };
+      const deps = {
+        ...makeDeps(),
+        specAuthoringPolicy,
+        authoringApiConvergenceCoordinator,
+      };
+      (deps.workspaceManager.create as ReturnType<typeof vi.fn>).mockResolvedValue({ workspace_path: '/ws/request-001', branch: 'spec/request-001' });
+      (deps.artifactAuthoringAgent.create as ReturnType<typeof vi.fn>).mockResolvedValue({ artifact_path: '/ws/request-001/spec.md' });
+      (deps.artifactPublisher.createArtifact as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'CANVAS-X', url: 'https://x' });
+
+      const registry = buildDefaultHandlerRegistry(deps);
+      const run = makeRun({ stage: 'new_thread', intent: 'idea' });
+      const handler = registry.resolve({ event_type: 'new_request', stage: 'new_thread', intent: 'idea' });
+      const event: InboundEvent = {
+        type: 'new_request',
+        payload: {
+          request_id: 'request-001',
+          channel: run.channel,
+          conversation: run.conversation,
+          origin: run.origin,
+          author: 'U123',
+          content: 'idea',
+          intent: 'idea',
+          received_at: new Date().toISOString(),
+        },
+      };
+      await handler?.(event, run);
+
+      expect(handlerConstructorDeps.artifactCreation.length).toBeGreaterThan(0);
+      expect(handlerConstructorDeps.artifactCreation.at(-1)?.specAuthoringPolicy).toBe(specAuthoringPolicy);
+      expect(handlerConstructorDeps.artifactCreation.at(-1)?.authoringApiConvergenceCoordinator).toBe(authoringApiConvergenceCoordinator);
+    });
+
+    it('does NOT pass specAuthoringPolicy or authoringApiConvergenceCoordinator to ArtifactFeedbackHandler', async () => {
+      handlerConstructorDeps.artifactFeedback.length = 0;
+      const specAuthoringPolicy = { api_convergence: { enabled: true, max_rounds: 3, allow_same_model: false } };
+      const authoringApiConvergenceCoordinator = { run: vi.fn() };
+      const deps = {
+        ...makeDeps(),
+        specAuthoringPolicy,
+        authoringApiConvergenceCoordinator,
+      };
+      (deps.artifactAuthoringAgent.revise as ReturnType<typeof vi.fn>).mockResolvedValue({ comment_responses: [], page_content: '# Revised' });
+
+      const registry = buildDefaultHandlerRegistry(deps);
+      const run = makeRun();
+      const event: InboundEvent = { type: 'thread_message', payload: makeFeedback({ content: 'tweak this' }) };
+      const handler = registry.resolve({ event_type: 'thread_message', stage: 'reviewing_spec', intent: 'feedback' });
+      await handler?.(event, run);
+
+      expect(handlerConstructorDeps.artifactFeedback.length).toBeGreaterThan(0);
+      expect(handlerConstructorDeps.artifactFeedback.at(-1)?.specAuthoringPolicy).toBeUndefined();
+      expect(handlerConstructorDeps.artifactFeedback.at(-1)?.authoringApiConvergenceCoordinator).toBeUndefined();
     });
   });
 });

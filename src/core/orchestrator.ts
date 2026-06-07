@@ -31,6 +31,7 @@ import type { ImplementationReviewCoordinator } from './ai/implementation-review
 import type { ResolvedImplementationConvergencePolicy } from './ai/layered-convergence-policy.js';
 import type { BudgetWriter } from './journal/model-session-budget.js';
 import type { SpecReviewCoordinator } from './ai/spec-review-coordinator.js';
+import type { AuthoringApiConvergenceCoordinator } from './ai/authoring-api-convergence-coordinator.js';
 import { clearAgentRequestContext, isAiActiveStage } from './run-ai-context.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
 import type { RunJournal } from './journal/run-journal.js';
@@ -95,6 +96,8 @@ export interface OrchestratorDeps {
   autoPruneWorkspace?: boolean;
   workspacePruner?: import('./workspace-pruner.js').WorkspacePruner;
   journal?: RunJournal;
+  specAuthoringPolicy?: { api_convergence: { enabled: boolean; max_rounds: number; allow_same_model: boolean } };
+  authoringApiConvergenceCoordinator?: Pick<AuthoringApiConvergenceCoordinator, 'run'>;
 }
 
 interface OrchestratorOptions {
@@ -647,6 +650,8 @@ export class OrchestratorImpl implements Orchestrator {
       autoPruneWorkspace: this.deps.autoPruneWorkspace,
       workspacePruner: this.deps.workspacePruner,
       journal: this.deps.journal,
+      specAuthoringPolicy: this.deps.specAuthoringPolicy,
+      authoringApiConvergenceCoordinator: this.deps.authoringApiConvergenceCoordinator,
     });
   }
 

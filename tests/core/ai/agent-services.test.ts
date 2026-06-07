@@ -22,10 +22,16 @@ import {
   buildLayeredProposePrompt,
   buildLayeredCritiquePrompt,
   buildLayeredRevisePrompt,
+  buildArtifactTechSpecDraftPrompt,
+  buildArtifactTaskDecompositionPrompt,
+  buildAuthoringApiProposePrompt,
+  buildAuthoringApiCritiquePrompt,
+  buildAuthoringApiRevisePrompt,
+  buildArtifactRevisePrompt,
 } from '../../../src/core/ai/agent-services.js';
 import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
 import { createLogger } from '../../../src/core/logger.js';
-import type { AgentDrainSummary, AgentRunEvent, AgentRunRequest, AgentRunner, ImplementationResult } from '../../../src/types/ai.js';
+import type { AgentDrainSummary, AgentRunEvent, AgentRunRequest, AgentRunner, ConvergedApiArtifact, ImplementationResult, ImplementationReviewFinding } from '../../../src/types/ai.js';
 import type { Request, ThreadMessage } from '../../../src/types/events.js';
 import type { IssueManager } from '../../../src/types/issue-tracker.js';
 import type { ArtifactCommentAnchorCodec } from '../../../src/types/publisher.js';
@@ -1851,5 +1857,288 @@ describe('buildLayeredRevisePrompt', () => {
     expect(prompt).toContain('New file duplicates existing boundary');
     expect(prompt).toContain('Move skeleton into existing module');
     expect(prompt).toContain('Layout altitude contract');
+  });
+});
+
+describe('buildArtifactTechSpecDraftPrompt', () => {
+  it('contains required constraint strings for tech spec draft stage', () => {
+    const request = makeRequest('Build a new auth system');
+    const prompt = buildArtifactTechSpecDraftPrompt(request, '/workspace/specs', '/workspace/.autocatalyst/result.json');
+
+    expect(prompt).toContain('stop after requirements/design/tech spec');
+    expect(prompt).toContain('canonical empty top-level');
+    expect(prompt).toContain('## Task list');
+    expect(prompt).toContain('Do not decompose implementation tasks');
+  });
+
+  it('includes the request content and result path', () => {
+    const request = makeRequest('Build a new auth system');
+    const prompt = buildArtifactTechSpecDraftPrompt(request, '/workspace/specs', '/workspace/.autocatalyst/result.json');
+
+    expect(prompt).toContain('Build a new auth system');
+    expect(prompt).toContain('/workspace/.autocatalyst/result.json');
+    expect(prompt).toContain('/workspace/specs');
+  });
+
+  it('includes branch ownership policy and mm:planning override', () => {
+    const request = makeRequest('Build a new auth system');
+    const prompt = buildArtifactTechSpecDraftPrompt(request, '/workspace/specs', '/workspace/.autocatalyst/result.json');
+
+    expect(prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
+    expect(prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+    expect(prompt).toContain('When using mm:planning, treat its Branch setup section as already complete.');
+    expect(prompt).toContain('Do not run git checkout -b feat/..., enhancement/..., or fix/...');
+  });
+});
+
+describe('buildArtifactTaskDecompositionPrompt', () => {
+  it('contains required constraint strings for task decomposition stage', () => {
+    const prompt = buildArtifactTaskDecompositionPrompt('/workspace/specs/feature-auth.md', '/workspace/.autocatalyst/result.json');
+
+    expect(prompt).toContain('run only the task-decomposition stage');
+    expect(prompt).toContain('Preserve the existing requirements, design, tech spec, and `## Converged API` sections');
+    expect(prompt).toContain('Respect the agreed API surface');
+  });
+
+  it('includes artifact path and result path', () => {
+    const prompt = buildArtifactTaskDecompositionPrompt('/workspace/specs/feature-auth.md', '/workspace/.autocatalyst/result.json');
+
+    expect(prompt).toContain('/workspace/specs/feature-auth.md');
+    expect(prompt).toContain('/workspace/.autocatalyst/result.json');
+  });
+
+  it('includes branch ownership policy', () => {
+    const prompt = buildArtifactTaskDecompositionPrompt('/workspace/specs/feature-auth.md', '/workspace/.autocatalyst/result.json');
+
+    expect(prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
+    expect(prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+  });
+});
+
+describe('buildArtifactRevisePrompt', () => {
+  function makeFeedback(content = 'Please clarify the auth flow'): ThreadMessage {
+    return {
+      request_id: 'req-001',
+      channel: channel,
+      conversation: conversation,
+      origin: origin,
+      content,
+      author: 'U123',
+      received_at: new Date().toISOString(),
+    };
+  }
+
+  it('includes feedback content and artifact paths', () => {
+    const prompt = buildArtifactRevisePrompt(makeFeedback(), [], '/specs/feature.md', '/ws/.autocatalyst/result.json', '# Spec', []);
+
+    expect(prompt).toContain('Please clarify the auth flow');
+    expect(prompt).toContain('/specs/feature.md');
+    expect(prompt).toContain('/ws/.autocatalyst/result.json');
+    expect(prompt).toContain('# Spec');
+  });
+
+  it('does not include stale-API note when staleConvergedApiRemoved is false', () => {
+    const prompt = buildArtifactRevisePrompt(makeFeedback(), [], '/specs/feature.md', '/ws/.autocatalyst/result.json', '# Spec', [], false);
+
+    expect(prompt).not.toContain('## Converged API` section was removed');
+    expect(prompt).not.toContain('Do not invent or recreate a `## Converged API`');
+  });
+
+  it('includes stale-API-removal note when staleConvergedApiRemoved is true', () => {
+    const prompt = buildArtifactRevisePrompt(makeFeedback(), [], '/specs/feature.md', '/ws/.autocatalyst/result.json', '# Spec', [], true);
+
+    expect(prompt).toContain('## Converged API` section was removed');
+    expect(prompt).toContain('human feedback may have invalidated the agreed API contract');
+    expect(prompt).toContain('Do not invent or recreate a `## Converged API` section');
+  });
+});
+
+describe('buildAuthoringApiProposePrompt', () => {
+  it('contains JSON schema hint and round number', () => {
+    const prompt = buildAuthoringApiProposePrompt('# Spec content', '/workspace/.autocatalyst/api-artifact.json', 2);
+
+    expect(prompt).toContain('"files"');
+    expect(prompt).toContain('"public_api"');
+    expect(prompt).toContain('"types"');
+    expect(prompt).toContain('Round: 2');
+  });
+
+  it('includes spec content and artifact result path', () => {
+    const prompt = buildAuthoringApiProposePrompt('# My spec', '/workspace/.autocatalyst/api-artifact.json', 1);
+
+    expect(prompt).toContain('# My spec');
+    expect(prompt).toContain('/workspace/.autocatalyst/api-artifact.json');
+  });
+
+  it('identifies the agent role as API proposer', () => {
+    const prompt = buildAuthoringApiProposePrompt('# Spec', '/result.json', 1);
+
+    expect(prompt).toContain('You are an API proposer');
+  });
+});
+
+describe('buildAuthoringApiCritiquePrompt', () => {
+  const fakeArtifact: ConvergedApiArtifact = {
+    files: [{ path: 'src/auth.ts', purpose: 'Auth module', exports: ['AuthService'] }],
+    public_api: [{ symbol: 'AuthService', signature: 'export class AuthService', parameters: [], returns: 'AuthService', errors: [] }],
+    types: [],
+    notes: '',
+  };
+
+  it('contains the result schema and round number', () => {
+    const prompt = buildAuthoringApiCritiquePrompt('# Spec', fakeArtifact, '/workspace/.autocatalyst/critique.json', 3);
+
+    expect(prompt).toContain('"status"');
+    expect(prompt).toContain('"findings"');
+    expect(prompt).toContain('"no_findings"');
+    expect(prompt).toContain('Round: 3');
+  });
+
+  it('includes the serialized artifact and spec', () => {
+    const prompt = buildAuthoringApiCritiquePrompt('# My spec content', fakeArtifact, '/result.json', 1);
+
+    expect(prompt).toContain('# My spec content');
+    expect(prompt).toContain('AuthService');
+    expect(prompt).toContain('/result.json');
+  });
+
+  it('identifies the agent role as adversarial API critic', () => {
+    const prompt = buildAuthoringApiCritiquePrompt('# Spec', fakeArtifact, '/result.json', 1);
+
+    expect(prompt).toContain('You are an adversarial API critic');
+  });
+});
+
+describe('buildAuthoringApiRevisePrompt', () => {
+  const fakeArtifact: ConvergedApiArtifact = {
+    files: [{ path: 'src/auth.ts', purpose: 'Auth module', exports: ['AuthService'] }],
+    public_api: [{ symbol: 'AuthService', signature: 'export class AuthService', parameters: [], returns: 'AuthService', errors: [] }],
+    types: [],
+    notes: '',
+  };
+
+  const fakeFindings: ImplementationReviewFinding[] = [
+    {
+      id: 'API-1',
+      severity: 'blocker',
+      category: 'correctness',
+      finding: 'Missing error contract for invalid credentials',
+      suggested_action: 'Add AuthError to errors array',
+    },
+    {
+      id: 'API-2',
+      severity: 'warning',
+      category: 'docs',
+      finding: 'Parameter description is missing',
+    },
+  ];
+
+  it('contains finding IDs and current artifact', () => {
+    const prompt = buildAuthoringApiRevisePrompt('# Spec', fakeArtifact, fakeFindings, '/workspace/.autocatalyst/api-artifact.json', 2);
+
+    expect(prompt).toContain('API-1');
+    expect(prompt).toContain('API-2');
+    expect(prompt).toContain('Missing error contract for invalid credentials');
+    expect(prompt).toContain('AuthService');
+  });
+
+  it('includes suggested actions when present', () => {
+    const prompt = buildAuthoringApiRevisePrompt('# Spec', fakeArtifact, fakeFindings, '/result.json', 1);
+
+    expect(prompt).toContain('Add AuthError to errors array');
+  });
+
+  it('does not include suggested action line when absent', () => {
+    const prompt = buildAuthoringApiRevisePrompt('# Spec', fakeArtifact, fakeFindings, '/result.json', 1);
+
+    // API-2 has no suggested_action — should not produce a "Suggested action:" for it
+    const lines = prompt.split('\n');
+    const api2Idx = lines.findIndex(l => l.includes('API-2'));
+    const nextSuggested = lines.slice(api2Idx + 1).findIndex(l => l.startsWith('Suggested action:'));
+    const nextId = lines.slice(api2Idx + 1).findIndex(l => l.startsWith('[API_FINDING_ID:'));
+    // There should be no suggested action line between API-2 and the end of findings
+    expect(nextSuggested === -1 || (nextId !== -1 && nextSuggested > nextId)).toBe(true);
+  });
+
+  it('includes round number and artifact result path', () => {
+    const prompt = buildAuthoringApiRevisePrompt('# Spec', fakeArtifact, fakeFindings, '/workspace/result.json', 4);
+
+    expect(prompt).toContain('Round: 4');
+    expect(prompt).toContain('/workspace/result.json');
+  });
+
+  it('identifies the agent role as API proposer in revise mode', () => {
+    const prompt = buildAuthoringApiRevisePrompt('# Spec', fakeArtifact, fakeFindings, '/result.json', 1);
+
+    expect(prompt).toContain('You are an API proposer');
+  });
+});
+
+describe('AgentRunnerArtifactAuthoringAgent two-phase spec authoring', () => {
+  test('createTechSpecDraft passes tech spec draft prompt to runner and returns artifact path', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-tech-spec-draft-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-auth.md') }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+      const progress = vi.fn();
+
+      const result = await service.createTechSpecDraft(makeRequest('Build a new auth system'), workspace, progress);
+
+      expect(result.artifact_path).toContain('feature-auth.md');
+      expect(calls[0].route).toMatchObject({
+        task: 'artifact.create',
+        stage: 'new_thread',
+        intent: 'idea',
+        artifact_kind: 'feature_spec',
+      });
+      expect(calls[0].prompt).toContain('stop after requirements/design/tech spec');
+      expect(calls[0].prompt).toContain('Do not decompose implementation tasks');
+      expect(calls[0].working_directory).toBe(workspace);
+      expect(progress).toHaveBeenCalledWith('working');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('decomposeTasks passes task decomposition prompt to runner and returns artifact path', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-decompose-tasks-'));
+    try {
+      const specPath = join(workspace, 'context-human', 'specs', 'feature-auth.md');
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: specPath }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+      const progress = vi.fn();
+
+      const result = await service.decomposeTasks(specPath, workspace, progress);
+
+      expect(result.artifact_path).toBe(specPath);
+      expect(calls[0].route).toMatchObject({
+        task: 'artifact.create',
+        stage: 'new_thread',
+        intent: 'idea',
+        artifact_kind: 'feature_spec',
+      });
+      expect(calls[0].prompt).toContain('run only the task-decomposition stage');
+      expect(calls[0].prompt).toContain('Preserve the existing requirements, design, tech spec');
+      expect(calls[0].working_directory).toBe(workspace);
+      expect(progress).toHaveBeenCalledWith('working');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 });

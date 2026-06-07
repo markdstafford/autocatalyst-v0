@@ -8,7 +8,7 @@ import { App } from '@slack/bolt';
 import Anthropic from '@anthropic-ai/sdk';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveAiConfig, getImplementationReviewPolicy, getSpecReviewPolicy, type ResolvedAiConfig } from '../core/config.js';
+import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveAiConfig, getImplementationReviewPolicy, getSpecReviewPolicy, getSpecAuthoringPolicy, type ResolvedAiConfig } from '../core/config.js';
 import { bootstrapWorkflowRuntime } from '../core/bootstrap.js';
 import { normalizeWorkflowConfig } from '../core/config-normalizer.js';
 import { configExists, runInit } from '../core/init.js';
@@ -55,6 +55,7 @@ import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 import { ImplementationReviewCoordinator } from '../core/ai/implementation-review-coordinator.js';
 import { resolveImplementationConvergencePolicy } from '../core/ai/layered-convergence-policy.js';
 import { SpecReviewCoordinator } from '../core/ai/spec-review-coordinator.js';
+import { AuthoringApiConvergenceCoordinator } from '../core/ai/authoring-api-convergence-coordinator.js';
 import type { BudgetWriter } from '../core/journal/model-session-budget.js';
 import { createLogger } from '../core/logger.js';
 import { WorkspacePruner } from '../core/workspace-pruner.js';
@@ -209,13 +210,24 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     logger,
   });
 
-  const convergencePolicy = resolveImplementationConvergencePolicy(currentConfig.config);
+  const convergencePolicy = resolveImplementationConvergencePolicy(
+    currentConfig.config,
+    warning => logger.warn(warning, 'Ignoring legacy implementation convergence depth'),
+  );
 
   const specReviewCoordinator = new SpecReviewCoordinator({
     runner: agentRunner,
     artifactAuthoringAgent,
     routingPolicy: aiRoutingPolicy,
     policy: getSpecReviewPolicy(currentConfig.config),
+    logger,
+  });
+
+  const specAuthoringPolicy = getSpecAuthoringPolicy(currentConfig.config);
+  const authoringApiConvergenceCoordinator = new AuthoringApiConvergenceCoordinator({
+    runner: agentRunner,
+    routingPolicy: aiRoutingPolicy,
+    policy: specAuthoringPolicy.api_convergence,
     logger,
   });
 
@@ -248,6 +260,8 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     convergencePolicy,
     budgetWriter,
     specReviewCoordinator,
+    specAuthoringPolicy,
+    authoringApiConvergenceCoordinator,
     threadPruner,
     workspacePruner,
     confirmationRegistry,
