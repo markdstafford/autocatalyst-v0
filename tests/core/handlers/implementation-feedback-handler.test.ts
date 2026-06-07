@@ -5,7 +5,7 @@ import type { FeedbackItem } from '../../../src/types/impl-feedback-page.js';
 import type { Run } from '../../../src/types/runs.js';
 import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN } from '../../helpers/channel-refs.js';
 import type { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
-import type { ImplementationReviewExchange } from '../../../src/types/ai.js';
+import type { GateReviewExchange, ImplementationReviewExchange } from '../../../src/types/ai.js';
 
 function makeReviewExchange(overrides: Partial<ImplementationReviewExchange> = {}): ImplementationReviewExchange {
   return {
@@ -480,6 +480,32 @@ describe('ImplementationFeedbackHandler', () => {
       expect.any(String),
     );
   });
+
+  it('passes gate_exchanges to implFeedbackPage.update when present', async () => {
+    const gateExchange: GateReviewExchange = {
+      id: 'gate-001',
+      gate: 'initial',
+      round: 1,
+      created_at: new Date().toISOString(),
+      proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+      critic_profile: { profile: 'review-agent', provider: 'claude_agent_sdk' },
+      review_status: 'no_findings',
+      review_summary: 'Gate passed.',
+      findings: [],
+      responses: [],
+      converged: true,
+      requires_human_retest: false,
+    };
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ impl_feedback_ref: 'feedback-page-id', gate_exchanges: [gateExchange] });
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    expect(deps.implFeedbackPage?.update).toHaveBeenCalledWith(
+      'feedback-page-id',
+      expect.objectContaining({ gate_exchanges: [gateExchange] }),
+    );
+  });
 });
 
 describe('ImplementationFeedbackHandler with reviewCoordinator', () => {
@@ -533,6 +559,23 @@ describe('ImplementationFeedbackHandler with reviewCoordinator', () => {
       },
       testing_steps: ['cd /ws/request-001', 'npm test -- implementation-feedback-handler'],
     });
+  });
+
+  it('fails run when coordinator returns non-convergence failed result', async () => {
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockResolvedValue({
+        status: 'failed',
+        error: 'Implementation review initial did not converge after 2 rounds',
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun({ impl_feedback_ref: 'page-id' });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalled();
+    expect(deps.implFeedbackPage?.update).not.toHaveBeenCalled();
   });
 
   it('proceeds normally without coordinator when not configured', async () => {

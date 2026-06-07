@@ -4,7 +4,7 @@ import type { ThreadMessage } from '../../../src/types/events.js';
 import type { Run } from '../../../src/types/runs.js';
 import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN } from '../../helpers/channel-refs.js';
 import type { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
-import type { ImplementationResult } from '../../../src/types/ai.js';
+import type { GateReviewExchange, ImplementationResult } from '../../../src/types/ai.js';
 
 function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
@@ -453,6 +453,23 @@ describe('ImplementationApprovalHandler with reviewCoordinator', () => {
     expect(deps.failRun).toHaveBeenCalled();
   });
 
+  it('fails run when final review returns non-convergence failed result', async () => {
+    const coord = {
+      runFinalReview: vi.fn().mockResolvedValue({
+        status: 'failed',
+        error: 'Implementation review final did not converge after 2 rounds',
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalled();
+    expect(deps.prManager.createPR).not.toHaveBeenCalled();
+  });
+
   it('proceeds to PR creation without coordinator when not configured', async () => {
     const { handler, deps } = makeHandler({ reviewCoordinator: undefined });
     const result = await handler.handle(makeRun(), makeFeedback());
@@ -534,6 +551,34 @@ describe('ImplementationApprovalHandler with reviewCoordinator', () => {
       'spec/request-001',
       '/ws/request-001/context-human/specs/feature-test.md',
       expect.objectContaining({ impl_result: expectedImplResult }),
+    );
+  });
+
+  it('passes gate_exchanges to implFeedbackPage.update on final review retest path', async () => {
+    const gateExchange: GateReviewExchange = {
+      id: 'gate-001',
+      gate: 'final',
+      round: 1,
+      created_at: new Date().toISOString(),
+      proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+      critic_profile: { profile: 'review-agent', provider: 'claude_agent_sdk' },
+      review_status: 'no_findings',
+      review_summary: 'Final gate passed.',
+      findings: [],
+      responses: [],
+      converged: true,
+      requires_human_retest: false,
+    };
+    const coord = makeReviewCoordinator({ requires_human_retest: true });
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun({ impl_feedback_ref: 'feedback-page-id', gate_exchanges: [gateExchange] });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'reviewing_implementation' });
+    expect(deps.implFeedbackPage?.update).toHaveBeenCalledWith(
+      'feedback-page-id',
+      expect.objectContaining({ gate_exchanges: [gateExchange] }),
     );
   });
 });

@@ -216,6 +216,49 @@ describe('DefaultAgentRoutingPolicy', () => {
       provider: 'anthropic',
     });
   });
+
+  test('role-keyed routing takes precedence over task-level routing', () => {
+    const config = makeAiConfig();
+    config.profiles.push({
+      name: 'critic-agent',
+      endpoint: 'ep',
+      model: 'gpt-5.5',
+      runner: 'openai_agent_sdk',
+    });
+    config.routing['implementation.review.initial'] = 'agent-default';
+    config.routing['implementation.review.initial:critic'] = 'critic-agent';
+    const policy = new DefaultAgentRoutingPolicy(config);
+
+    expect(policy.resolve({ task: 'implementation.review.initial', role: 'critic' })).toMatchObject({
+      id: 'critic-agent',
+      provider: 'openai_agent_sdk',
+    });
+  });
+
+  test('role-keyed routing falls back to task-level routing', () => {
+    const config = makeAiConfig();
+    config.routing['implementation.review.initial'] = 'agent-default';
+    const policy = new DefaultAgentRoutingPolicy(config);
+
+    expect(policy.resolve({ task: 'implementation.review.initial', role: 'critic' })).toMatchObject({
+      id: 'agent-default',
+      provider: 'claude_agent_sdk',
+    });
+  });
+
+  test('resolve throws only after role-specific and task-level routing are both missing', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+
+    expect(() => policy.resolve({ task: 'implementation.review.initial', role: 'critic' })).toThrow(
+      "No routing entry for task 'implementation.review.initial' or role key 'implementation.review.initial:critic'",
+    );
+  });
+
+  test('resolveOptional returns null only after role-specific and task-level routing are both missing', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+
+    expect(policy.resolveOptional({ task: 'implementation.review.initial', role: 'critic' })).toBeNull();
+  });
 });
 
 describe('agentProfileSummary', () => {

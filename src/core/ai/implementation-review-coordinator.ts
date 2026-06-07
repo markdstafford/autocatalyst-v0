@@ -8,9 +8,12 @@ import type pino from 'pino';
 import type {
   AgentInvocationMetadata,
   AgentProfile,
+  AgentRoute,
   AgentRunner,
   AgentRoutingPolicy,
+  AgentServiceTelemetry,
   AgentSessionCaptureFn,
+  GateReviewExchange,
   ImplementationAgent,
   ImplementationResult,
   ImplementationReviewExchange,
@@ -35,6 +38,10 @@ export interface ImplementationReviewPolicy {
   max_final_rounds: number;
   on_review_failure: 'warn' | 'block';
   retest_on_behavior_change: boolean;
+  convergence: {
+    enabled: boolean;
+    allow_same_model: boolean;
+  };
 }
 
 export interface ImplementationReviewCoordinatorDeps {
@@ -55,7 +62,7 @@ export interface ReviewRunParams {
   onProgress?: (message: string) => Promise<void>;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
   captureSession?: AgentSessionCaptureFn;
-  captureFeedback?: (exchange: ImplementationReviewExchange, run: Run) => void;
+  captureFeedback?: (exchange: ImplementationReviewExchange | GateReviewExchange, run: Run) => void;
 }
 
 export class ImplementationReviewCoordinator {
@@ -74,6 +81,17 @@ export class ImplementationReviewCoordinator {
   }
 
   private async runReview(
+    phase: 'initial' | 'final',
+    routeTask: 'implementation.review.initial' | 'implementation.review.final',
+    params: ReviewRunParams,
+  ): Promise<ImplementationResult> {
+    if (!this.deps.policy.convergence.enabled) {
+      return this.runSinglePassReview(phase, routeTask, params);
+    }
+    return this.runConvergenceReview(phase, routeTask, params);
+  }
+
+  private async runSinglePassReview(
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
     { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback }: ReviewRunParams,
@@ -304,6 +322,358 @@ export class ImplementationReviewCoordinator {
     return implementerResult;
   }
 
+  private async runConvergenceReview(
+    phase: 'initial' | 'final',
+    routeTask: 'implementation.review.initial' | 'implementation.review.final',
+    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback }: ReviewRunParams,
+  ): Promise<ImplementationResult> {
+    // Resolve critic profile — fall back to initial when final is absent
+    let criticProfile = this.deps.routingPolicy.resolveOptional({ task: routeTask, role: 'critic' });
+    if (!criticProfile && phase === 'final') {
+      criticProfile = this.deps.routingPolicy.resolveOptional({ task: 'implementation.review.initial', role: 'critic' });
+    }
+    // Also fall back to non-role route
+    if (!criticProfile) {
+      criticProfile = this.deps.routingPolicy.resolveOptional({ task: routeTask });
+    }
+    if (!criticProfile && phase === 'final') {
+      criticProfile = this.deps.routingPolicy.resolveOptional({ task: 'implementation.review.initial' });
+    }
+
+    if (!criticProfile) {
+      this.deps.logger.warn(
+        { event: 'implementation.review.skipped', phase, run_id: run.id },
+        'No review route configured — skipping review',
+      );
+      return implementation_result;
+    }
+
+    // Resolve proposer profile
+    const proposerProfileOptional = this.deps.routingPolicy.resolveOptional({ task: 'implementation.run', role: 'proposer' });
+    const proposerProfile = proposerProfileOptional ?? this.deps.routingPolicy.resolveOptional({ task: 'implementation.run' });
+    const proposerRoute: AgentRoute = { task: 'implementation.run', role: 'proposer' };
+
+    const criticSummary = agentProfileSummary(criticProfile);
+    const proposerSummary = proposerProfile ? agentProfileSummary(proposerProfile) : { profile: 'implementation.run', provider: 'unknown' };
+
+    // Same-model enforcement
+    const sameModelResult = this.assertDistinctProfiles(phase, proposerProfile, criticProfile);
+    if (sameModelResult) return sameModelResult;
+
+    const maxRounds = phase === 'initial' ? this.deps.policy.max_initial_rounds : this.deps.policy.max_final_rounds;
+    const reviewResultPath = join(working_directory, '.autocatalyst', 'impl-review-result.json');
+
+    try {
+      await mkdir(dirname(reviewResultPath), { recursive: true });
+    } catch { /* ignore */ }
+
+    this.deps.logger.info(
+      { event: 'implementation.review.convergence_started', phase, gate: phase, run_id: run.id, max_rounds: maxRounds, critic_profile: criticSummary.profile },
+      'Starting convergence review',
+    );
+
+    let currentResult: ImplementationResult = implementation_result;
+    const previousSignatures: Set<string>[] = [];
+    const previousBlockingCounts: number[] = [];
+
+    for (let round = 1; round <= maxRounds; round++) {
+      const roundStart = performance.now();
+
+      this.deps.logger.info(
+        { event: 'implementation.review.round_started', phase, gate: phase, round, run_id: run.id, review_profile: criticProfile.id },
+        'Convergence review round started',
+      );
+
+      // Re-derive git diff and changed files fresh inside the loop
+      const diffContext = await this.getGitDiff(working_directory);
+      const changedFiles = await this.getChangedFiles(working_directory);
+
+      // Build critic prompt with convergence context
+      const convergenceContext = { gate: phase, round };
+      const prompt = phase === 'initial'
+        ? buildInitialReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext)
+        : buildFinalReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext);
+
+      // Run critic
+      let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
+      let drainSummary: AgentDrainSummary | undefined;
+      const ts_start = new Date().toISOString();
+
+      try {
+        if (onAgentRequest) {
+          onAgentRequest({
+            model: criticProfile.model?.trim() || 'unknown',
+            requested_at: new Date().toISOString(),
+            route: { task: routeTask, role: 'critic' },
+          });
+        }
+
+        const progressWithHeartbeat: typeof onProgress =
+          onProgress && onAgentRequest
+            ? async (msg: string) => {
+                onAgentRequest({
+                  model: criticProfile!.model?.trim() || 'unknown',
+                  requested_at: new Date().toISOString(),
+                  route: { task: routeTask, role: 'critic' },
+                  is_heartbeat: true,
+                });
+                return onProgress(msg);
+              }
+            : onProgress;
+
+        drainSummary = await drainAgentRunner(
+          this.deps.runner.run({
+            route: { task: routeTask, role: 'critic' },
+            profile: criticProfile,
+            working_directory,
+            prompt,
+            telemetry: {
+              run_id: run.id,
+              request_id: run.request_id,
+              phase: `implementation_review_${phase}_critic`,
+              route_task: routeTask,
+              handler: 'ImplementationReviewCoordinator.convergence',
+            },
+          }),
+          progressWithHeartbeat,
+          this.deps.logger,
+          `implementation_review_${phase}_critic`,
+          { run_id: run.id, request_id: run.request_id },
+        );
+
+        const reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
+        reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
+        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'ok', drainSummary, { role: 'critic', round, gate: phase });
+      } catch (err) {
+        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'failed', drainSummary, { role: 'critic', round, gate: phase });
+        this.deps.logger.error(
+          { event: 'implementation.review.round_failed', phase, gate: phase, round, run_id: run.id, error: String(err) },
+          'Convergence review round failed',
+        );
+        return this.handleReviewFailure(phase, run, currentResult, proposerSummary, criticSummary, String(err), captureFeedback);
+      }
+
+      if (reviewResult.status === 'failed') {
+        this.deps.logger.error(
+          { event: 'implementation.review.round_failed', phase, gate: phase, round, run_id: run.id, reason: 'review_agent_status_failed', error: reviewResult.error },
+          'Convergence review round failed: review agent reported failure',
+        );
+        return this.handleReviewFailure(phase, run, currentResult, proposerSummary, criticSummary, reviewResult.error ?? 'Review model reported failure', captureFeedback);
+      }
+
+      const duration_ms = Math.round(performance.now() - roundStart);
+      const blockerCount = reviewResult.findings.filter(f => f.severity === 'blocker').length;
+      const warningCount = reviewResult.findings.filter(f => f.severity === 'warning').length;
+      const infoCount = reviewResult.findings.filter(f => f.severity === 'info').length;
+
+      this.deps.logger.info(
+        { event: 'implementation.review.round_completed', phase, gate: phase, round, run_id: run.id, review_profile: criticProfile.id, duration_ms, blocker_count: blockerCount, warning_count: warningCount, info_count: infoCount },
+        'Convergence review round completed',
+      );
+
+      const blockingFindings = this.blockingFindings(reviewResult.findings);
+
+      // Check for convergence
+      if (reviewResult.status === 'no_findings' || blockingFindings.length === 0) {
+        this.appendGateExchange(run, {
+          id: randomUUID(),
+          gate: phase,
+          round,
+          created_at: new Date().toISOString(),
+          proposer_profile: proposerSummary,
+          critic_profile: criticSummary,
+          review_status: 'converged',
+          review_summary: reviewResult.summary,
+          findings: reviewResult.findings,
+          responses: [],
+          converged: true,
+          requires_human_retest: reviewResult.requires_human_retest ?? false,
+        }, captureFeedback);
+
+        this.deps.logger.info(
+          { event: 'implementation.review.converged', phase, gate: phase, round, run_id: run.id },
+          'Implementation review converged',
+        );
+
+        const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
+        await this.sendProgress(onProgress, run, phase, round, `${phaseLabel} converged after ${round} round${round === 1 ? '' : 's'}`);
+
+        return currentResult;
+      }
+
+      // Oscillation check (only after at least one proposer response)
+      if (previousSignatures.length > 0 && this.isOscillating(previousSignatures, previousBlockingCounts, reviewResult.findings)) {
+        this.appendGateExchange(run, {
+          id: randomUUID(),
+          gate: phase,
+          round,
+          created_at: new Date().toISOString(),
+          proposer_profile: proposerSummary,
+          critic_profile: criticSummary,
+          review_status: 'non_converged',
+          review_summary: reviewResult.summary,
+          findings: reviewResult.findings,
+          responses: [],
+          converged: false,
+          non_convergence_reason: 'oscillation',
+          requires_human_retest: reviewResult.requires_human_retest ?? false,
+        }, captureFeedback);
+
+        this.deps.logger.warn(
+          { event: 'implementation.review.oscillation_detected', run_id: run.id, gate: phase, round, signature_count: this.signatureSet(reviewResult.findings).size },
+          'Implementation review did not converge: oscillation detected',
+        );
+
+        const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
+        await this.sendProgress(onProgress, run, phase, round, `${phaseLabel} did not converge: oscillation detected after ${round} round${round === 1 ? '' : 's'}`);
+
+        return { status: 'failed', error: `Implementation review ${phase} did not converge because oscillation was detected` };
+      }
+
+      // Max rounds check
+      if (round === maxRounds) {
+        this.appendGateExchange(run, {
+          id: randomUUID(),
+          gate: phase,
+          round,
+          created_at: new Date().toISOString(),
+          proposer_profile: proposerSummary,
+          critic_profile: criticSummary,
+          review_status: 'non_converged',
+          review_summary: reviewResult.summary,
+          findings: reviewResult.findings,
+          responses: [],
+          converged: false,
+          non_convergence_reason: 'max_rounds',
+          requires_human_retest: reviewResult.requires_human_retest ?? false,
+        }, captureFeedback);
+
+        this.deps.logger.warn(
+          { event: 'implementation.review.non_converged', phase, gate: phase, round, run_id: run.id, reason: 'max_rounds' },
+          'Implementation review did not converge: max_rounds reached',
+        );
+
+        const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
+        await this.sendProgress(onProgress, run, phase, round, `${phaseLabel} did not converge after ${maxRounds} round${maxRounds === 1 ? '' : 's'}`);
+
+        return { status: 'failed', error: `Implementation review ${phase} did not converge after ${maxRounds} rounds` };
+      }
+
+      // Run proposer response
+      const responsePrompt = buildImplementerResponsePrompt(artifact_path, working_directory, currentResult, blockingFindings, convergenceContext);
+      const proposerTelemetry: AgentServiceTelemetry = {
+        run_id: run.id,
+        request_id: run.request_id,
+        phase: `implementation_review_${phase}_proposer`,
+        route: proposerRoute,
+        role: 'proposer',
+        round,
+        gate: phase,
+        captureSession,
+        onAgentRequest,
+      };
+
+      let proposerResult: ImplementationResult;
+      try {
+        proposerResult = await this.deps.implementer.implement(
+          artifact_path,
+          working_directory,
+          responsePrompt,
+          onProgress ?? ((_msg: string) => Promise.resolve()),
+          proposerTelemetry,
+        );
+      } catch (err) {
+        return { status: 'failed', error: `Proposer response to review failed: ${String(err)}` };
+      }
+
+      if (proposerResult.status !== 'complete') {
+        return proposerResult;
+      }
+
+      // Branch guard after proposer response
+      if (this.deps.branchGuard) {
+        try {
+          await this.deps.branchGuard.check(working_directory, run.branch);
+        } catch (err) {
+          return { status: 'failed', error: `Branch guard failed after proposer response: ${String(err)}` };
+        }
+      }
+
+      // Validate responses
+      const responses = proposerResult.review_responses ?? [];
+      this.validateResponses(run, blockingFindings, responses);
+
+      // Append addressed gate exchange
+      this.appendGateExchange(run, {
+        id: randomUUID(),
+        gate: phase,
+        round,
+        created_at: new Date().toISOString(),
+        proposer_profile: proposerSummary,
+        critic_profile: criticSummary,
+        review_status: 'addressed',
+        review_summary: reviewResult.summary,
+        findings: reviewResult.findings,
+        responses,
+        converged: false,
+        requires_human_retest: proposerResult.requires_human_retest ?? false,
+      }, captureFeedback);
+
+      currentResult = proposerResult;
+
+      // Track signatures after proposer response for oscillation detection in next round
+      previousSignatures.push(this.signatureSet(blockingFindings));
+      previousBlockingCounts.push(blockingFindings.length);
+
+      const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
+      await this.sendProgress(
+        onProgress,
+        run,
+        phase,
+        round,
+        `${phaseLabel} round ${round} returned ${blockingFindings.length} finding${blockingFindings.length === 1 ? '' : 's'} — asking proposer to revise`,
+      );
+    }
+
+    // Should not reach here
+    return { status: 'failed', error: `Implementation review ${phase} did not converge` };
+  }
+
+  private assertDistinctProfiles(
+    phase: 'initial' | 'final',
+    proposerProfile: AgentProfile | null,
+    criticProfile: AgentProfile,
+  ): ImplementationResult | null {
+    if (!proposerProfile) return null; // no proposer configured, cannot compare
+
+    if (proposerProfile.id === criticProfile.id) {
+      if (!this.deps.policy.convergence.allow_same_model) {
+        this.deps.logger.warn(
+          { event: 'implementation.review.same_model_rejected', gate: phase, profile_id: proposerProfile.id },
+          'Same-profile proposer and critic rejected',
+        );
+        return {
+          status: 'failed',
+          error: `Implementation review convergence requires distinct proposer and critic profiles for ${phase} review. Both resolved to ${proposerProfile.id}. Configure implementation.run:proposer and implementation.review.${phase}:critic differently, or set implementation_review.convergence.allow_same_model: true.`,
+        };
+      }
+      // allow_same_model: true — warn but continue
+      this.deps.logger.warn(
+        { event: 'implementation.review.same_model_allowed', gate: phase, profile_id: proposerProfile.id },
+        'Same-profile proposer and critic allowed by configuration',
+      );
+    } else {
+      // Different IDs — check for same provider/model alias and warn
+      if (proposerProfile.provider === criticProfile.provider && proposerProfile.model === criticProfile.model) {
+        this.deps.logger.warn(
+          { event: 'implementation.review.same_model_alias_warning', gate: phase, proposer_id: proposerProfile.id, critic_id: criticProfile.id },
+          'Proposer and critic have different profile IDs but same provider/model',
+        );
+      }
+    }
+    return null;
+  }
+
   private emitSessionRecord(
     captureSession: AgentSessionCaptureFn | undefined,
     profile: AgentProfile,
@@ -311,6 +681,7 @@ export class ImplementationReviewCoordinator {
     ts_start: string,
     outcome: 'ok' | 'failed',
     drainSummary: AgentDrainSummary | undefined,
+    convergenceMeta?: { role: 'critic' | 'proposer'; round: number; gate: 'initial' | 'final' | string },
   ): void {
     if (!captureSession) return;
     const runner = profile.provider === 'openai_agent_sdk' ? 'openai_agent' : 'anthropic_agent';
@@ -327,6 +698,7 @@ export class ImplementationReviewCoordinator {
       tool_results: drainSummary?.tool_result_count ?? null,
       outcome,
       runner,
+      ...(convergenceMeta ?? {}),
     });
   }
 
@@ -337,7 +709,7 @@ export class ImplementationReviewCoordinator {
     implSummary: ReturnType<typeof agentProfileSummary>,
     reviewSummary: ReturnType<typeof agentProfileSummary>,
     errorMsg: string,
-    captureFeedback?: (exchange: ImplementationReviewExchange, run: Run) => void,
+    captureFeedback?: (exchange: ImplementationReviewExchange | GateReviewExchange, run: Run) => void,
   ): ImplementationResult {
     this.deps.logger.warn(
       { event: 'implementation.review.failed', phase, run_id: run.id, error: errorMsg },
@@ -374,10 +746,84 @@ export class ImplementationReviewCoordinator {
     }
   }
 
-  private appendExchange(run: Run, exchange: ImplementationReviewExchange, captureFeedback?: (exchange: ImplementationReviewExchange, run: Run) => void): void {
+  private appendExchange(run: Run, exchange: ImplementationReviewExchange, captureFeedback?: (exchange: ImplementationReviewExchange | GateReviewExchange, run: Run) => void): void {
     if (!run.review_exchanges) run.review_exchanges = [];
     run.review_exchanges.push(exchange);
     captureFeedback?.(exchange, run);
+  }
+
+  private blockingFindings(findings: ImplementationReviewFinding[]): ImplementationReviewFinding[] {
+    return findings.filter(f => f.severity === 'blocker' || f.severity === 'warning');
+  }
+
+  private findingSignature(finding: ImplementationReviewFinding): string {
+    const normalized = finding.finding
+      .toLowerCase()
+      .replace(/\b(?:[a-f0-9]{7,40}|[A-Z]+-\d+)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return `${finding.severity}|${finding.category}|${normalized}`;
+  }
+
+  private signatureSet(findings: ImplementationReviewFinding[]): Set<string> {
+    const blocking = this.blockingFindings(findings);
+    return new Set(blocking.map(f => this.findingSignature(f)));
+  }
+
+  private isOscillating(
+    previousSignatures: Set<string>[],
+    previousCounts: number[],
+    currentFindings: ImplementationReviewFinding[],
+  ): boolean {
+    const currentBlocking = this.blockingFindings(currentFindings);
+    const currentCount = currentBlocking.length;
+    const currentSigs = this.signatureSet(currentFindings);
+
+    // Check if same signature set appeared before with no shrink
+    for (const prev of previousSignatures) {
+      if (prev.size === currentSigs.size && [...prev].every(sig => currentSigs.has(sig))) {
+        return true; // repeated non-shrinking signature set
+      }
+    }
+
+    // Check two consecutive count increases
+    if (previousCounts.length >= 2) {
+      const last = previousCounts[previousCounts.length - 1]!;
+      const secondLast = previousCounts[previousCounts.length - 2]!;
+      if (currentCount > last && last > secondLast) {
+        return true; // two consecutive increases
+      }
+    }
+
+    return false;
+  }
+
+  private appendGateExchange(
+    run: Run,
+    exchange: GateReviewExchange,
+    captureFeedback?: (exchange: ImplementationReviewExchange | GateReviewExchange, run: Run) => void,
+  ): void {
+    if (!run.gate_exchanges) run.gate_exchanges = [];
+    run.gate_exchanges.push(exchange);
+    captureFeedback?.(exchange, run);
+  }
+
+  private async sendProgress(
+    onProgress: ((message: string) => Promise<void>) | undefined,
+    run: Run,
+    phase: 'initial' | 'final',
+    round: number,
+    message: string,
+  ): Promise<void> {
+    if (!onProgress) return;
+    try {
+      await onProgress(message);
+    } catch (err) {
+      this.deps.logger.warn(
+        { event: 'progress_failed', phase, gate: phase, round, run_id: run.id, error: String(err) },
+        'Progress message failed to send',
+      );
+    }
   }
 
   private async getGitDiff(working_directory: string): Promise<string> {

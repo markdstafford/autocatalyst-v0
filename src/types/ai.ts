@@ -18,6 +18,9 @@ export type AgentSessionCaptureFn = (data: {
   tool_results: number | null;
   outcome: 'ok' | 'failed' | 'incomplete';
   runner: 'anthropic_agent' | 'openai_agent';
+  role?: AgentRole | string | null;
+  round?: number;
+  gate?: 'initial' | 'final' | string | null;
 }) => void;
 
 export type AgentTaskKind =
@@ -33,8 +36,11 @@ export type AgentTaskKind =
   | 'issue.triage'
   | 'pr.title_generate';
 
+export type AgentRole = 'proposer' | 'critic';
+
 export interface AgentRoute {
   task: AgentTaskKind;
+  role?: AgentRole | string;
   stage?: RunStage | 'new_thread' | string;
   intent?: Intent;
   artifact_kind?: ArtifactKind;
@@ -53,6 +59,10 @@ export interface AgentServiceTelemetry {
   phase?: string;
   captureSession?: AgentSessionCaptureFn;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
+  route?: AgentRoute;
+  role?: AgentRole | string;
+  round?: number;
+  gate?: 'initial' | 'final' | string;
 }
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'max';
@@ -142,6 +152,25 @@ export interface ImplementationReviewExchange {
   review_summary: string;
   findings: ImplementationReviewFinding[];
   responses: ImplementationReviewResponseItem[];
+  requires_human_retest: boolean;
+}
+
+export type GateReviewName = 'initial' | 'final' | string;
+export type GateNonConvergenceReason = 'max_rounds' | 'oscillation';
+
+export interface GateReviewExchange {
+  id: string;
+  gate: GateReviewName;
+  round: number;
+  created_at: string;
+  proposer_profile: AgentProfileSummary;
+  critic_profile: AgentProfileSummary;
+  review_status: ImplementationReviewExchangeStatus | 'non_converged' | 'converged';
+  review_summary: string;
+  findings: ImplementationReviewFinding[];
+  responses: ImplementationReviewResponseItem[];
+  converged: boolean;
+  non_convergence_reason?: GateNonConvergenceReason;
   requires_human_retest: boolean;
 }
 

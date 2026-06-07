@@ -421,6 +421,36 @@ describe('validateConfig: implementation_review', () => {
       validateConfig({ implementation_review: { max_final_rounds: -1 } } as unknown as WorkflowConfig),
     ).toThrow('max_final_rounds must be a positive integer');
   });
+
+  it('passes for a valid implementation_review.convergence block', () => {
+    expect(() =>
+      validateConfig({
+        implementation_review: {
+          convergence: { enabled: true, allow_same_model: false },
+          max_initial_rounds: 2,
+          max_final_rounds: 2,
+        },
+      } as unknown as WorkflowConfig),
+    ).not.toThrow();
+  });
+
+  it('throws when implementation_review.convergence is not an object', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { convergence: true } } as unknown as WorkflowConfig),
+    ).toThrow('implementation_review.convergence must be an object');
+  });
+
+  it('throws when implementation_review.convergence.enabled is not boolean', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { convergence: { enabled: 'yes' } } } as unknown as WorkflowConfig),
+    ).toThrow('implementation_review.convergence.enabled must be a boolean');
+  });
+
+  it('throws when implementation_review.convergence.allow_same_model is not boolean', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { convergence: { allow_same_model: 'no' } } } as unknown as WorkflowConfig),
+    ).toThrow('implementation_review.convergence.allow_same_model must be a boolean');
+  });
 });
 
 // ─── validateConfig: workspace.auto_prune ────────────────────────────────────
@@ -449,6 +479,7 @@ describe('getImplementationReviewPolicy', () => {
       max_final_rounds: 1,
       on_review_failure: 'warn',
       retest_on_behavior_change: true,
+      convergence: { enabled: false, allow_same_model: false },
     });
   });
 
@@ -475,6 +506,42 @@ describe('getImplementationReviewPolicy', () => {
   it('defaults on_review_failure to warn when not set', () => {
     const policy = getImplementationReviewPolicy({ implementation_review: { max_initial_rounds: 2 } } as unknown as WorkflowConfig);
     expect(policy.on_review_failure).toBe('warn');
+  });
+
+  it('defaults convergence to disabled with same-model disallowed', () => {
+    const policy = getImplementationReviewPolicy({} as WorkflowConfig);
+    expect(policy.convergence).toEqual({ enabled: false, allow_same_model: false });
+  });
+
+  it('preserves legacy max-round defaults when convergence is disabled and max values are absent', () => {
+    const policy = getImplementationReviewPolicy({
+      implementation_review: { convergence: { enabled: false } },
+    } as unknown as WorkflowConfig);
+    expect(policy.max_initial_rounds).toBe(1);
+    expect(policy.max_final_rounds).toBe(1);
+  });
+
+  it('uses convergence max-round defaults of 2 when enabled and max values are absent', () => {
+    const policy = getImplementationReviewPolicy({
+      implementation_review: { convergence: { enabled: true } },
+    } as unknown as WorkflowConfig);
+    expect(policy.max_initial_rounds).toBe(2);
+    expect(policy.max_final_rounds).toBe(2);
+  });
+
+  it('keeps explicit max-round values when convergence is enabled', () => {
+    const policy = getImplementationReviewPolicy({
+      implementation_review: {
+        convergence: { enabled: true, allow_same_model: true },
+        max_initial_rounds: 3,
+        max_final_rounds: 4,
+      },
+    } as unknown as WorkflowConfig);
+    expect(policy).toMatchObject({
+      max_initial_rounds: 3,
+      max_final_rounds: 4,
+      convergence: { enabled: true, allow_same_model: true },
+    });
   });
 });
 

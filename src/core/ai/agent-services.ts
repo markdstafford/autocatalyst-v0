@@ -69,6 +69,9 @@ function emitSessionRecord(
     tool_results: drainSummary?.tool_result_count ?? null,
     outcome,
     runner,
+    ...(telemetry.role !== undefined ? { role: telemetry.role } : {}),
+    ...(telemetry.round !== undefined ? { round: telemetry.round } : {}),
+    ...(telemetry.gate !== undefined ? { gate: telemetry.gate } : {}),
   });
 }
 
@@ -447,7 +450,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
   ): Promise<ImplementationResult> {
     const resultFilePath = join(working_directory, '.autocatalyst', 'impl-result.json');
     const prompt = buildImplementationPrompt(artifact_path, resultFilePath, additional_context, plan_path);
-    const route = { task: 'implementation.run' as const };
+    const route = telemetry?.route ?? { task: 'implementation.run' as const };
 
     this.logger.debug(
       { event: 'impl.agent_invoked', working_directory, has_additional_context: Boolean(additional_context), ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) },
@@ -1627,6 +1630,7 @@ export function buildInitialReviewPrompt(
   impl_result: ImplementationResult,
   diff_context: string,
   changed_files: string[],
+  convergenceContext?: { gate: string; round: number },
 ): string {
   const reviewResultPath = join(working_directory, '.autocatalyst', 'impl-review-result.json');
   const summaryLines = [
@@ -1640,7 +1644,18 @@ export function buildInitialReviewPrompt(
     impl_result.testing_instructions ? `Testing instructions: ${impl_result.testing_instructions}` : '',
   ].filter(Boolean);
 
+  const convergenceLines = convergenceContext
+    ? [
+        `Convergence gate: ${convergenceContext.gate}`,
+        `Convergence round: ${convergenceContext.round}`,
+        `Review the current workspace revision for this round, not only the previous implementer summary.`,
+        `Return status: "no_findings" when no blocker or warning findings remain. Optional info findings do not block convergence.`,
+        ``,
+      ]
+    : [];
+
   return [
+    ...convergenceLines,
     `You are an adversarial code reviewer. Your job is to inspect the implementation and find issues.`,
     `Do NOT edit any files. Read only.`,
     ``,
@@ -1698,6 +1713,7 @@ export function buildFinalReviewPrompt(
   impl_result: ImplementationResult,
   diff_context: string,
   changed_files: string[],
+  convergenceContext?: { gate: string; round: number },
 ): string {
   const reviewResultPath = join(working_directory, '.autocatalyst', 'impl-review-result.json');
   const summaryLines = [
@@ -1707,7 +1723,18 @@ export function buildFinalReviewPrompt(
       : '',
   ].filter(Boolean);
 
+  const convergenceLines = convergenceContext
+    ? [
+        `Convergence gate: ${convergenceContext.gate}`,
+        `Convergence round: ${convergenceContext.round}`,
+        `Review the current workspace revision for this round, not only the previous implementer summary.`,
+        `Return status: "no_findings" when no blocker or warning findings remain. Optional info findings do not block convergence.`,
+        ``,
+      ]
+    : [];
+
   return [
+    ...convergenceLines,
     `You are an adversarial code reviewer performing a final pre-PR security and readiness check.`,
     `Do NOT edit any files. Read only.`,
     ``,
@@ -1763,8 +1790,21 @@ export function buildImplementerResponsePrompt(
   working_directory: string,
   impl_result: ImplementationResult,
   findings: ImplementationReviewFinding[],
+  convergenceContext?: { gate: string; round: number },
 ): string {
   const resultFilePath = join(working_directory, '.autocatalyst', 'impl-result.json');
+
+  const convergenceLines = convergenceContext
+    ? [
+        `Convergence gate: ${convergenceContext.gate}`,
+        `Convergence round: ${convergenceContext.round}`,
+        `Review the current workspace revision for this round, not only the previous implementer summary.`,
+        `Return status: "no_findings" when no blocker or warning findings remain. Optional info findings do not block convergence.`,
+        `The critic will re-review the current revision after your response.`,
+        `Declining a blocker or warning does not guarantee convergence.`,
+        ``,
+      ]
+    : [];
 
   const findingBlocks = findings.map(f => [
     `[REVIEW_ID: ${f.id}]`,
@@ -1775,6 +1815,7 @@ export function buildImplementerResponsePrompt(
   ].join('\n'));
 
   return [
+    ...convergenceLines,
     `Review findings require your response.`,
     ``,
     BRANCH_OWNERSHIP_POLICY,

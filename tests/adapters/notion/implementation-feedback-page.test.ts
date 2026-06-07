@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NotionImplementationFeedbackPage } from '../../../src/adapters/notion/implementation-feedback-page.js';
 import type { NotionClient } from '../../../src/adapters/notion/notion-client.js';
 import type { ImplementationReviewInput } from '../../../src/types/impl-feedback-page.js';
-import type { ImplementationReviewExchange } from '../../../src/types/ai.js';
+import type { GateReviewExchange, ImplementationReviewExchange } from '../../../src/types/ai.js';
 
 const nullDest = { write: () => {} };
 
@@ -1080,6 +1080,261 @@ describe('AI review section', () => {
     const newMarkdown = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0][1].replace_content.new_str as string;
     expect(newMarkdown).toContain('## AI review');
     expect(newMarkdown.indexOf('## AI review')).toBeGreaterThan(newMarkdown.indexOf('## Summary'));
+  });
+});
+
+describe('Gate exchange rendering', () => {
+  it('renders gate_exchanges grouped by gate and round when creating the testing guide', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      {
+        id: 'gate-1',
+        gate: 'initial',
+        round: 1,
+        created_at: '2026-06-07T00:00:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk', model: 'gpt-5.5' },
+        review_status: 'addressed',
+        review_summary: 'One blocker found.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing regression test.' }],
+        responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added invalid provider config coverage.' }],
+        converged: false,
+        requires_human_retest: false,
+      },
+      {
+        id: 'gate-2',
+        gate: 'initial',
+        round: 2,
+        created_at: '2026-06-07T00:01:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk', model: 'gpt-5.5' },
+        review_status: 'converged',
+        review_summary: 'No blockers remain.',
+        findings: [],
+        responses: [],
+        converged: true,
+        requires_human_retest: false,
+      },
+    ];
+
+    await page.create(makeReviewInput({ gate_exchanges }));
+
+    const createCall = pagesCreate.mock.calls[0][0] as {
+      children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> }; paragraph?: { rich_text: Array<{ text: { content: string } }> } }>;
+    };
+
+    // Collect all text content from the created blocks
+    const allTexts = createCall.children.flatMap(b => {
+      if (b.type === 'heading_2') return [b.heading_2!.rich_text[0].text.content];
+      if (b.type === 'paragraph') return [b.paragraph!.rich_text[0].text.content];
+      return [];
+    });
+
+    expect(allTexts).toContain('AI review');
+    const combined = allTexts.join('\n');
+    expect(combined).toContain('Initial review');
+    expect(combined).toContain('Convergence: converged');
+    expect(combined).toContain('Rounds: 2');
+    expect(combined).toContain('[INIT-1] Missing regression test.');
+    expect(combined).toContain('Fixed — Added invalid provider config coverage.');
+    expect(combined).toContain('Round 2 — converged');
+  });
+
+  it('renders non-converged open findings from gate_exchanges when updating the testing guide', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [{
+      id: 'gate-3',
+      gate: 'final',
+      round: 2,
+      created_at: '2026-06-07T00:02:00.000Z',
+      proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+      critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+      review_status: 'non_converged',
+      review_summary: 'Security blocker still open.',
+      findings: [{ id: 'FINAL-2', severity: 'blocker', category: 'security', finding: 'Token output can appear in logs.' }],
+      responses: [{ id: 'FINAL-2', disposition: 'declined', response: 'Only config names are logged.' }],
+      converged: false,
+      non_convergence_reason: 'max_rounds',
+      requires_human_retest: false,
+    }];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(markdown).toContain('### Final review');
+    expect(markdown).toContain('Convergence: failed (`max_rounds`)');
+    expect(markdown).toContain('#### Open findings');
+    expect(markdown).toContain('- [ ] [FINAL-2] Token output can appear in logs.');
+    expect(markdown).toContain('Last proposer response: Declined — Only config names are logged.');
+  });
+
+  it('redacts secret-like text in gate exchange finding and response text', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      {
+        id: 'gate-secret-1',
+        gate: 'initial',
+        round: 1,
+        created_at: '2026-06-07T00:00:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+        review_status: 'addressed',
+        review_summary: 'Secret in finding.',
+        findings: [{ id: 'INIT-S1', severity: 'blocker', category: 'security', finding: 'Token sk-abc12345678 was logged.' }],
+        responses: [{ id: 'INIT-S1', disposition: 'fixed', response: 'Removed key api_key=supersecretvalue from output.' }],
+        converged: false,
+        requires_human_retest: false,
+      },
+      {
+        id: 'gate-secret-2',
+        gate: 'initial',
+        round: 2,
+        created_at: '2026-06-07T00:01:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+        review_status: 'converged',
+        review_summary: 'Resolved.',
+        findings: [],
+        responses: [],
+        converged: true,
+        requires_human_retest: false,
+      },
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(markdown).not.toContain('sk-abc12345678');
+    expect(markdown).not.toContain('supersecretvalue');
+    expect(markdown).toContain('[REDACTED]');
+  });
+
+  it('redacts secret-like text in non-converged open finding and last proposer response', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      {
+        id: 'gate-nc-1',
+        gate: 'final',
+        round: 1,
+        created_at: '2026-06-07T00:00:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+        review_status: 'addressed',
+        review_summary: 'Blocker found.',
+        findings: [{ id: 'FINAL-S1', severity: 'blocker', category: 'security', finding: 'Key sk-secretvalue123 exposed.' }],
+        responses: [{ id: 'FINAL-S1', disposition: 'declined', response: 'That token api_key=plainvalue is not sensitive.' }],
+        converged: false,
+        requires_human_retest: false,
+      },
+      {
+        id: 'gate-nc-2',
+        gate: 'final',
+        round: 2,
+        created_at: '2026-06-07T00:01:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+        review_status: 'non_converged',
+        review_summary: 'Still blocked.',
+        findings: [{ id: 'FINAL-S1', severity: 'blocker', category: 'security', finding: 'Key sk-secretvalue123 still exposed.' }],
+        responses: [],
+        converged: false,
+        non_convergence_reason: 'max_rounds',
+        requires_human_retest: false,
+      },
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(markdown).not.toContain('sk-secretvalue123');
+    expect(markdown).not.toContain('plainvalue');
+    expect(markdown).toContain('[REDACTED]');
+    // The last proposer response from round 1 should appear (via lookback)
+    expect(markdown).toContain('Last proposer response: Declined');
+  });
+
+  it('shows last proposer response from prior round for non-converged open findings when terminal exchange has empty responses', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    // Round 1 addressed exchange holds the proposer's last response.
+    // Round 2 is the terminal non_converged exchange with responses: [] (matches actual coordinator output).
+    const gate_exchanges: GateReviewExchange[] = [
+      {
+        id: 'gate-lb-1',
+        gate: 'initial',
+        round: 1,
+        created_at: '2026-06-07T00:00:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+        review_status: 'addressed',
+        review_summary: 'Blocker.',
+        findings: [{ id: 'INIT-LB1', severity: 'blocker', category: 'correctness', finding: 'Missing coverage.' }],
+        responses: [{ id: 'INIT-LB1', disposition: 'declined', response: 'Not applicable per spec.' }],
+        converged: false,
+        requires_human_retest: false,
+      },
+      {
+        id: 'gate-lb-2',
+        gate: 'initial',
+        round: 2,
+        created_at: '2026-06-07T00:01:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+        review_status: 'non_converged',
+        review_summary: 'Still blocked.',
+        findings: [{ id: 'INIT-LB1', severity: 'blocker', category: 'correctness', finding: 'Missing coverage.' }],
+        responses: [],
+        converged: false,
+        non_convergence_reason: 'max_rounds',
+        requires_human_retest: false,
+      },
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(markdown).toContain('#### Open findings');
+    // The proposer response from round 1 should appear in the open findings section
+    expect(markdown).toContain('Last proposer response: Declined — Not applicable per spec.');
+  });
+
+  it('continues to render legacy review_exchanges when gate_exchanges are absent', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+    const exchange = makeReviewExchange({ review_status: 'addressed' });
+
+    await page.create(makeReviewInput({ review_exchanges: [exchange] }));
+
+    const createCall = pagesCreate.mock.calls[0][0] as {
+      children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> }; paragraph?: { rich_text: Array<{ text: { content: string } }> } }>;
+    };
+    const allTexts = createCall.children.flatMap(b => {
+      if (b.type === 'heading_2') return [b.heading_2!.rich_text[0].text.content];
+      if (b.type === 'paragraph') return [b.paragraph!.rich_text[0].text.content];
+      return [];
+    });
+
+    // Legacy rendering produces "Review status: addressed" in the blocks
+    expect(allTexts.join('\n')).toContain('Review status: addressed');
   });
 });
 

@@ -1,5 +1,5 @@
 import type pino from 'pino';
-import type { ImplementationAgent, AgentSessionCaptureFn, ImplementationReviewExchange } from '../../types/ai.js';
+import type { ImplementationAgent, AgentSessionCaptureFn, GateReviewExchange, ImplementationReviewExchange } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { ImplementationReviewPublisher } from '../../types/impl-feedback-page.js';
 import { titleFromArtifactPath } from '../../types/publisher.js';
@@ -63,7 +63,7 @@ export class ImplementationStartHandler {
 
     const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
     const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
-      ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+      ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: data.round ?? 1, role: data.role ?? null, gate: data.gate ?? null }).catch(() => {}); }
       : undefined;
 
     let result;
@@ -95,18 +95,46 @@ export class ImplementationStartHandler {
     let reviewedResult = result;
     if (this.deps.reviewCoordinator) {
       const captureFeedback = this.deps.journal
-        ? (exchange: ImplementationReviewExchange, captureRun: Run) => {
-            for (const finding of exchange.findings) {
-              void this.deps.journal!.captureFeedback({
-                id: finding.id,
-                run: captureRun,
-                target: 'implementation',
-                author_principal: `review:${exchange.review_profile.provider}:${exchange.review_profile.profile}`,
-                text: finding.finding + (finding.suggested_action ? ' | ' + finding.suggested_action : ''),
-                severity: finding.severity,
-                category: finding.category,
-                disposition: exchange.responses.some(r => r.id === finding.id && r.disposition === 'fixed') ? 'addressed' : 'open',
-              }).catch(() => {});
+        ? (exchange: ImplementationReviewExchange | GateReviewExchange, captureRun: Run) => {
+            if ('gate' in exchange && 'round' in exchange) {
+              // GateReviewExchange — emit feedback per finding with gate-aware disposition
+              const criticProfile = exchange.critic_profile;
+              for (const finding of exchange.findings) {
+                const response = exchange.responses.find(r => r.id === finding.id);
+                const isBlocking = finding.severity === 'blocker' || finding.severity === 'warning';
+                const disposition =
+                  response?.disposition === 'fixed' ? 'addressed' as const
+                  : response?.disposition === 'declined' ? 'wont_fix' as const
+                  : exchange.converged || finding.severity === 'info' ? 'addressed' as const
+                  : isBlocking ? 'open' as const
+                  : 'addressed' as const;
+                void this.deps.journal!.captureFeedback({
+                  id: `${exchange.id}:${finding.id}`,
+                  run: captureRun,
+                  target: 'implementation',
+                  gate: exchange.gate,
+                  author_principal: `review:${criticProfile.provider}:${criticProfile.profile}`,
+                  text: finding.finding,
+                  severity: finding.severity,
+                  category: finding.category,
+                  disposition,
+                }).catch(() => {});
+              }
+            } else {
+              // Legacy ImplementationReviewExchange — keep existing behavior
+              const reviewProfile = exchange.review_profile;
+              for (const finding of exchange.findings) {
+                void this.deps.journal!.captureFeedback({
+                  id: finding.id,
+                  run: captureRun,
+                  target: 'implementation',
+                  author_principal: `review:${reviewProfile.provider}:${reviewProfile.profile}`,
+                  text: finding.finding + (finding.suggested_action ? ' | ' + finding.suggested_action : ''),
+                  severity: finding.severity,
+                  category: finding.category,
+                  disposition: exchange.responses.some(r => r.id === finding.id && r.disposition === 'fixed') ? 'addressed' : 'open',
+                }).catch(() => {});
+              }
             }
           }
         : undefined;
@@ -182,6 +210,7 @@ export class ImplementationStartHandler {
         review_summary: reviewedResult.review_summary,
         testing_steps: reviewedResult.testing_steps,
         review_exchanges: run.review_exchanges,
+        gate_exchanges: run.gate_exchanges,
       });
       run.impl_feedback_ref = publishedReview.id;
       this.deps.persist();

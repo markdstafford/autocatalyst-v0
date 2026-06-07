@@ -11,7 +11,7 @@ import { markArtifactStatus, artifactPath, artifactPublisherId } from '../run-re
 import { getArtifactLifecyclePolicy } from '../../types/artifact.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
-import type { AgentSessionCaptureFn, ImplementationResult } from '../../types/ai.js';
+import type { AgentSessionCaptureFn, GateReviewExchange, ImplementationResult, ImplementationReviewExchange } from '../../types/ai.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
 
@@ -29,7 +29,7 @@ export interface ImplementationApprovalDeps {
   now?: () => Date;
   branchGuard?: BranchGuard;
   reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runFinalReview'>;
-  journal?: Pick<RunJournal, 'captureSession'>;
+  journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
 }
 
 export type ImplementationApprovalResult =
@@ -88,7 +88,7 @@ export class ImplementationApprovalHandler {
     if (this.deps.reviewCoordinator) {
       const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
       const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
-        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: data.round ?? 1, role: data.role ?? null, gate: data.gate ?? null }).catch(() => {}); }
         : undefined;
       const currentResult: ImplementationResult = {
         status: 'complete',
@@ -97,6 +97,50 @@ export class ImplementationApprovalHandler {
         review_summary: run.last_impl_result?.review_summary,
         testing_steps: run.last_impl_result?.testing_steps,
       };
+      const captureFeedbackForReview = this.deps.journal
+        ? (exchange: ImplementationReviewExchange | GateReviewExchange, captureRun: Run) => {
+            if ('gate' in exchange && 'round' in exchange) {
+              // GateReviewExchange — emit feedback per finding with gate-aware disposition
+              const criticProfile = exchange.critic_profile;
+              for (const finding of exchange.findings) {
+                const response = exchange.responses.find(r => r.id === finding.id);
+                const isBlocking = finding.severity === 'blocker' || finding.severity === 'warning';
+                const disposition =
+                  response?.disposition === 'fixed' ? 'addressed' as const
+                  : response?.disposition === 'declined' ? 'wont_fix' as const
+                  : exchange.converged || finding.severity === 'info' ? 'addressed' as const
+                  : isBlocking ? 'open' as const
+                  : 'addressed' as const;
+                void this.deps.journal!.captureFeedback({
+                  id: `${exchange.id}:${finding.id}`,
+                  run: captureRun,
+                  target: 'implementation',
+                  gate: exchange.gate,
+                  author_principal: `review:${criticProfile.provider}:${criticProfile.profile}`,
+                  text: finding.finding,
+                  severity: finding.severity,
+                  category: finding.category,
+                  disposition,
+                }).catch(() => {});
+              }
+            } else {
+              // Legacy ImplementationReviewExchange — keep existing behavior
+              const reviewProfile = exchange.review_profile;
+              for (const finding of exchange.findings) {
+                void this.deps.journal!.captureFeedback({
+                  id: finding.id,
+                  run: captureRun,
+                  target: 'implementation',
+                  author_principal: `review:${reviewProfile.provider}:${reviewProfile.profile}`,
+                  text: finding.finding + (finding.suggested_action ? ' | ' + finding.suggested_action : ''),
+                  severity: finding.severity,
+                  category: finding.category,
+                  disposition: exchange.responses.some(r => r.id === finding.id && r.disposition === 'fixed') ? 'addressed' : 'open',
+                }).catch(() => {});
+              }
+            }
+          }
+        : undefined;
       const reviewedResult = await this.deps.reviewCoordinator.runFinalReview({
         run,
         artifact_path: localPath ?? '',
@@ -104,6 +148,7 @@ export class ImplementationApprovalHandler {
         working_directory: run.workspace_path,
         onAgentRequest,
         captureSession: captureSessionForReview,
+        captureFeedback: captureFeedbackForReview,
       });
 
       if (reviewedResult.status === 'needs_input') {
@@ -131,6 +176,7 @@ export class ImplementationApprovalHandler {
             await this.deps.implFeedbackPage?.update?.(run.impl_feedback_ref, {
               summary: reviewedResult.summary,
               review_exchanges: run.review_exchanges,
+              gate_exchanges: run.gate_exchanges,
             });
           } catch (err) {
             this.deps.logger.error(

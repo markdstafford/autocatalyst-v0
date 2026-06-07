@@ -28,7 +28,9 @@ export interface CaptureSessionParams {
   ts_end: string;
   phase?: string | null;
   step: AgentTaskKind | string;
+  role?: string | null;
   round: number;
+  gate?: string | null;
   model: { provider: string; name: string | null };
   inference: { effort: AgentEffort | null; thinking: AgentThinking | null };
   tokens?: NormalizedTokenUsage | null;
@@ -43,6 +45,7 @@ export interface CaptureFeedbackParams {
   id: string;
   run: Run;
   target: JournalFeedbackTarget;
+  gate?: string | null;
   author_principal: string;
   text: string;
   severity: JournalFeedbackSeverity;
@@ -121,7 +124,7 @@ export class RunJournal {
   }
 
   async captureSession(params: CaptureSessionParams): Promise<void> {
-    const { run, ts_start, ts_end, phase, step, round, model, inference, tokens, assistant_turns, tool_calls, tool_results, outcome, runner } = params;
+    const { run, ts_start, ts_end, phase, step, role, round, gate, model, inference, tokens, assistant_turns, tool_calls, tool_results, outcome, runner } = params;
     const identity = identityForRun(run);
 
     const runId = run.id;
@@ -139,9 +142,9 @@ export class RunJournal {
       request_id: identity.request_id,
       phase: phase ?? null,
       step,
-      role: null,
+      role: role ?? null,
       round,
-      gate: null,
+      gate: gate ?? null,
       model,
       inference,
       tokens: tokens ?? null,
@@ -160,7 +163,7 @@ export class RunJournal {
   }
 
   async captureFeedback(params: CaptureFeedbackParams): Promise<void> {
-    const { id, run, target, author_principal, text, severity, category, disposition = 'open', thread = [], received_at } = params;
+    const { id, run, target, gate, author_principal, text, severity, category, disposition = 'open', thread = [], received_at } = params;
     const identity = identityForRun(run);
 
     const record: Omit<JournalFeedbackRecord, 'seq' | 'writer_id'> = {
@@ -171,7 +174,7 @@ export class RunJournal {
       run_id: identity.run_id,
       request_id: identity.request_id,
       target,
-      gate: null,
+      gate: gate ?? null,
       author_principal,
       text: redactSecrets(text),
       anchor: null,

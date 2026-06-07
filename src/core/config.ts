@@ -183,6 +183,18 @@ export function validateConfig(config: WorkflowConfig): void {
         throw new Error('implementation_review.max_final_rounds must be a positive integer');
       }
     }
+    if (rr['convergence'] !== undefined) {
+      if (typeof rr['convergence'] !== 'object' || rr['convergence'] === null || Array.isArray(rr['convergence'])) {
+        throw new Error('implementation_review.convergence must be an object');
+      }
+      const convergence = rr['convergence'] as Record<string, unknown>;
+      if (convergence['enabled'] !== undefined && typeof convergence['enabled'] !== 'boolean') {
+        throw new Error('implementation_review.convergence.enabled must be a boolean');
+      }
+      if (convergence['allow_same_model'] !== undefined && typeof convergence['allow_same_model'] !== 'boolean') {
+        throw new Error('implementation_review.convergence.allow_same_model must be a boolean');
+      }
+    }
   }
 
   const rawJournal = (config as Record<string, unknown>)['journal'];
@@ -430,13 +442,21 @@ export function getImplementationReviewPolicy(config: WorkflowConfig): {
   max_final_rounds: number;
   on_review_failure: 'warn' | 'block';
   retest_on_behavior_change: boolean;
+  convergence: { enabled: boolean; allow_same_model: boolean };
 } {
   const raw = (config as Record<string, unknown>)['implementation_review'] as Record<string, unknown> | undefined;
+  const rawConvergence = raw?.['convergence'] as Record<string, unknown> | undefined;
+  const convergenceEnabled = rawConvergence?.['enabled'] === true;
+  const defaultMaxRounds = convergenceEnabled ? 2 : 1;
   return {
-    max_initial_rounds: typeof raw?.['max_initial_rounds'] === 'number' ? raw['max_initial_rounds'] as number : 1,
-    max_final_rounds: typeof raw?.['max_final_rounds'] === 'number' ? raw['max_final_rounds'] as number : 1,
+    max_initial_rounds: typeof raw?.['max_initial_rounds'] === 'number' ? raw['max_initial_rounds'] as number : defaultMaxRounds,
+    max_final_rounds: typeof raw?.['max_final_rounds'] === 'number' ? raw['max_final_rounds'] as number : defaultMaxRounds,
     on_review_failure: (raw?.['on_review_failure'] === 'block' ? 'block' : 'warn'),
     retest_on_behavior_change: raw?.['retest_on_behavior_change'] === false ? false : true,
+    convergence: {
+      enabled: convergenceEnabled,
+      allow_same_model: rawConvergence?.['allow_same_model'] === true,
+    },
   };
 }
 

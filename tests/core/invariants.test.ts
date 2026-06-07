@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
 import { loadConfig, redactConfig } from '../../src/core/config.js';
+import { VALID_RUN_STAGES } from '../../src/types/runs.js';
 
 describe('cross-cutting: JSON output validity', () => {
   let tempDir: string;
@@ -55,5 +56,23 @@ describe('cross-cutting: no secret leakage', () => {
     expect(redacted.value).toBe('[from env]');
     // Substring should NOT be redacted (it's a different value)
     expect(redacted.other).toBe('xabcx');
+  });
+});
+
+describe('run stage invariants', () => {
+  it('does not introduce new run stages beyond the approved set', () => {
+    expect([...VALID_RUN_STAGES].sort()).toEqual([
+      'awaiting_impl_input',
+      'awaiting_planning_input',
+      'done',
+      'failed',
+      'implementing',
+      'intake',
+      'planning',
+      'pr_open',
+      'reviewing_implementation',
+      'reviewing_spec',
+      'speccing',
+    ]);
   });
 });

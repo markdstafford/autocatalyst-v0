@@ -697,6 +697,42 @@ describe('FileRunStore.save — round-trip', () => {
 });
 
 // ─────────────────────────────────────────────
+// save — gate_exchanges round-trip
+// ─────────────────────────────────────────────
+
+describe('FileRunStore.save — gate_exchanges round-trip', () => {
+  it('preserves optional gate_exchanges when present', () => {
+    const { dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, { logDestination: dest });
+
+    const run = makeRun({
+      workspace_path: tmpDir,
+      stage: 'reviewing_spec',
+      gate_exchanges: [{
+        id: 'gate-1',
+        gate: 'initial',
+        round: 1,
+        created_at: '2026-06-07T00:00:00.000Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk', model: 'gpt-5.5' },
+        review_status: 'converged',
+        review_summary: 'No blockers remain.',
+        findings: [],
+        responses: [],
+        converged: true,
+        requires_human_retest: false,
+      }],
+    });
+
+    store.save(new Map([[run.request_id, run]]));
+    const loaded = store.load();
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].gate_exchanges).toEqual(run.gate_exchanges);
+  });
+});
+
+// ─────────────────────────────────────────────
 // save — write failure non-fatal
 // ─────────────────────────────────────────────
 

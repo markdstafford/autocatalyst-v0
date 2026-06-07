@@ -69,9 +69,9 @@ export interface JournalSessionRecord extends JournalBaseRecord {
   request_id: string | null;
   phase: string | null;
   step: AgentTaskKind | string;
-  role: null;
+  role: string | null;
   round: number;
-  gate: null;
+  gate: string | null;
   model: { provider: string; name: string | null };
   inference: { effort: AgentEffort | null; thinking: AgentThinking | null };
   /** null means token usage was unavailable (e.g. OpenAI Agent SDK did not provide counts), not zero. */
@@ -97,7 +97,7 @@ export interface JournalFeedbackRecord extends JournalBaseRecord {
   run_id: string | null;
   request_id: string | null;
   target: JournalFeedbackTarget;
-  gate: null;
+  gate: string | null;
   author_principal: string;
   text: string;
   anchor: unknown | null;

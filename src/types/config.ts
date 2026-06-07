@@ -65,11 +65,17 @@ export interface SpecReviewPolicy {
   template_conformance?: boolean;
 }
 
+export interface ImplementationReviewConvergencePolicy {
+  enabled?: boolean;
+  allow_same_model?: boolean;
+}
+
 export interface ImplementationReviewPolicy {
   max_initial_rounds?: number;
   max_final_rounds?: number;
   on_review_failure?: 'warn' | 'block';
   retest_on_behavior_change?: boolean;
+  convergence?: ImplementationReviewConvergencePolicy;
 }
 
 export interface AiConfig {
