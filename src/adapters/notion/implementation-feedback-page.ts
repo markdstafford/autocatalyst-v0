@@ -9,7 +9,7 @@ import type {
   ImplementationReviewStatus,
   PublishedImplementationReview,
 } from '../../types/impl-feedback-page.js';
-import type { GateReviewExchange, ImplementationReviewExchange } from '../../types/ai.js';
+import type { GateReviewExchange, ImplementationReviewExchange, LayeredConvergenceGateName } from '../../types/ai.js';
 export type {
   FeedbackItem,
   ImplementationReviewInput,
@@ -67,11 +67,141 @@ function buildAiReviewBlocks(exchanges: ImplementationReviewExchange[]): unknown
   return blocks;
 }
 
+const ALTITUDE_GATES: ReadonlyArray<LayeredConvergenceGateName> = ['layout', 'public_api', 'private_api', 'build'];
+
+const ALTITUDE_DISPLAY_NAMES: Record<LayeredConvergenceGateName, string> = {
+  layout: 'Layout',
+  public_api: 'Public API',
+  private_api: 'Private API',
+  build: 'Build',
+};
+
+const EARLY_ALTITUDE_GATES: ReadonlySet<LayeredConvergenceGateName> = new Set(['layout', 'public_api', 'private_api']);
+
+function hasAltitudeGates(exchanges: GateReviewExchange[]): boolean {
+  return exchanges.some(ex => (ALTITUDE_GATES as ReadonlyArray<string>).includes(ex.gate));
+}
+
+function renderLayeredAltitudeMarkdown(exchanges: GateReviewExchange[]): string {
+  const lines: string[] = [];
+
+  lines.push('### Layered implementation review');
+  lines.push('');
+
+  // Determine overall convergence: all altitudes must have converged
+  const altitudesPresent = ALTITUDE_GATES.filter(gate =>
+    exchanges.some(ex => ex.gate === gate),
+  );
+  const allConverged = altitudesPresent.every(gate => {
+    const gateExchanges = exchanges.filter(ex => ex.gate === gate).sort((a, b) => a.round - b.round);
+    const latest = gateExchanges[gateExchanges.length - 1];
+    return latest?.converged === true;
+  });
+  const depth = 'full';
+
+  lines.push(`Depth: \`${depth}\``);
+  lines.push(`Convergence: ${allConverged ? 'converged' : 'non-converged'}`);
+  lines.push('');
+
+  // Render each altitude in order
+  for (const gate of altitudesPresent) {
+    const gateExchanges = exchanges.filter(ex => ex.gate === gate).sort((a, b) => a.round - b.round);
+    const latest = gateExchanges[gateExchanges.length - 1];
+    const converged = latest?.converged === true;
+    const displayName = ALTITUDE_DISPLAY_NAMES[gate];
+    const roundWord = gateExchanges.length === 1 ? 'round' : 'rounds';
+    const convergenceLabel = converged ? `converged in ${gateExchanges.length} ${roundWord}` : 'non-converged';
+
+    lines.push(`#### ${displayName} — ${convergenceLabel}`);
+    lines.push('');
+
+    if ((EARLY_ALTITUDE_GATES as ReadonlySet<string>).has(gate)) {
+      lines.push('Intermediate code at this altitude may not compile; review was by diff context.');
+      lines.push('');
+    }
+
+    if (!converged && latest) {
+      const reason = latest.non_convergence_reason ?? 'max_rounds';
+      lines.push(`Non-convergence reason: \`${reason}\``);
+      lines.push('');
+      const blockingFindings = latest.findings.filter(f => f.severity === 'blocker' || f.severity === 'warning');
+      // Exclude filtered_note findings
+      const openFindings = blockingFindings.filter(f => f.layered?.disposition !== 'filtered_note');
+      if (openFindings.length === 0) {
+        lines.push('- No blocker or warning findings.');
+      } else {
+        const lastResponseById = new Map<string, (typeof latest.responses)[number]>();
+        for (const ex of gateExchanges) {
+          for (const r of ex.responses) {
+            lastResponseById.set(r.id, r);
+          }
+        }
+        for (const finding of openFindings) {
+          const response = lastResponseById.get(finding.id);
+          lines.push(`- [ ] [${finding.id}] ${redactSecrets(finding.finding)}`);
+          if (response) {
+            const label = response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input';
+            lines.push(`  Last proposer response: ${label} — ${redactSecrets(response.response)}`);
+          }
+        }
+      }
+      lines.push('');
+      continue;
+    }
+
+    // Converged: render per-round findings
+    for (const exchange of gateExchanges) {
+      const blockingFindings = exchange.findings.filter(
+        f => (f.severity === 'blocker' || f.severity === 'warning') && f.layered?.disposition !== 'filtered_note',
+      );
+      if (blockingFindings.length === 0) {
+        lines.push('- No blocker or warning findings.');
+      } else {
+        for (const finding of blockingFindings) {
+          const response = exchange.responses.find(r => r.id === finding.id);
+          lines.push(`- [x] [${finding.id}] ${redactSecrets(finding.finding)}`);
+          if (response) {
+            const label = response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input';
+            lines.push(`  ${label} — ${redactSecrets(response.response)}`);
+          }
+        }
+      }
+      lines.push('');
+    }
+  }
+
+  // Collect all filtered_note findings across all altitudes
+  const filteredNotes = exchanges.flatMap(ex =>
+    ex.findings
+      .filter(f => f.layered?.disposition === 'filtered_note')
+      .map(f => ({ gate: ex.gate, finding: f })),
+  );
+
+  if (filteredNotes.length > 0) {
+    lines.push('#### Notes filtered by altitude');
+    lines.push('');
+    for (const { gate, finding } of filteredNotes) {
+      const displayName = (ALTITUDE_DISPLAY_NAMES as Record<string, string>)[gate] ?? gate;
+      const filterReason = finding.layered?.filter_reason ?? 'unknown';
+      const originalSeverity = finding.layered?.original_severity ?? finding.severity;
+      const originalCategory = finding.layered?.original_category ?? finding.category;
+      lines.push(`- [${displayName.toUpperCase().replace(/ /g, '-')}-${finding.id}] (${originalSeverity}/${originalCategory}) filtered: ${filterReason} — ${redactSecrets(finding.finding)}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
 function gateTitle(gate: string): string {
   return gate === 'initial' ? 'Initial review' : gate === 'final' ? 'Final review' : `${gate} review`;
 }
 
 function renderGateReviewMarkdown(exchanges: GateReviewExchange[]): string {
+  if (hasAltitudeGates(exchanges)) {
+    return renderLayeredAltitudeMarkdown(exchanges);
+  }
+
   const lines: string[] = [];
   const gates = [...new Set(exchanges.map(exchange => exchange.gate))];
   for (const gate of gates) {
