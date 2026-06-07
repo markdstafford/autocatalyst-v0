@@ -54,6 +54,7 @@ export interface ReviewRunParams {
   onProgress?: (message: string) => Promise<void>;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
   captureSession?: AgentSessionCaptureFn;
+  captureFeedback?: (exchange: ImplementationReviewExchange, run: Run) => void;
 }
 
 export class ImplementationReviewCoordinator {
@@ -74,7 +75,7 @@ export class ImplementationReviewCoordinator {
   private async runReview(
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
-    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest, captureSession }: ReviewRunParams,
+    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback }: ReviewRunParams,
   ): Promise<ImplementationResult> {
     // Resolve review profile — fall back to initial when final is absent
     let reviewProfile = this.deps.routingPolicy.resolveOptional({ task: routeTask });
@@ -188,7 +189,7 @@ export class ImplementationReviewCoordinator {
         },
         'Review round failed',
       );
-      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, String(err));
+      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, String(err), captureFeedback);
     }
 
     if (reviewResult.status === 'failed') {
@@ -205,7 +206,7 @@ export class ImplementationReviewCoordinator {
         },
         'Review round failed: review agent reported failure',
       );
-      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, reviewResult.error ?? 'Review model reported failure');
+      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, reviewResult.error ?? 'Review model reported failure', captureFeedback);
     }
 
     const duration_ms = Math.round(performance.now() - roundStart);
@@ -244,7 +245,7 @@ export class ImplementationReviewCoordinator {
         findings: [],
         responses: [],
         requires_human_retest: false,
-      });
+      }, captureFeedback);
       return implementation_result;
     }
 
@@ -296,7 +297,7 @@ export class ImplementationReviewCoordinator {
       findings: reviewResult.findings,
       responses,
       requires_human_retest: implementerResult.requires_human_retest ?? false,
-    });
+    }, captureFeedback);
 
     return implementerResult;
   }
@@ -333,6 +334,7 @@ export class ImplementationReviewCoordinator {
     implSummary: ReturnType<typeof agentProfileSummary>,
     reviewSummary: ReturnType<typeof agentProfileSummary>,
     errorMsg: string,
+    captureFeedback?: (exchange: ImplementationReviewExchange, run: Run) => void,
   ): ImplementationResult {
     this.deps.logger.warn(
       { event: 'implementation.review.failed', phase, run_id: run.id, error: errorMsg },
@@ -353,7 +355,7 @@ export class ImplementationReviewCoordinator {
       findings: [],
       responses: [],
       requires_human_retest: false,
-    });
+    }, captureFeedback);
     return original;
   }
 
@@ -369,9 +371,10 @@ export class ImplementationReviewCoordinator {
     }
   }
 
-  private appendExchange(run: Run, exchange: ImplementationReviewExchange): void {
+  private appendExchange(run: Run, exchange: ImplementationReviewExchange, captureFeedback?: (exchange: ImplementationReviewExchange, run: Run) => void): void {
     if (!run.review_exchanges) run.review_exchanges = [];
     run.review_exchanges.push(exchange);
+    captureFeedback?.(exchange, run);
   }
 
   private async getGitDiff(working_directory: string): Promise<string> {

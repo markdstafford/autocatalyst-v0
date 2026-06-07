@@ -571,6 +571,24 @@ export class OrchestratorImpl implements Orchestrator {
         threadMsgClassificationStatus,
       ).catch(() => {});
 
+      // Capture feedback record for feedback-type intents
+      const FEEDBACK_INTENTS = new Set(['feedback', 'approval', 'impl_feedback', 'impl_input', 'pr_feedback']);
+      if (FEEDBACK_INTENTS.has(intent) && this.deps.journal) {
+        const feedbackTarget = (routingStage === 'reviewing_spec' || routingStage === 'awaiting_planning_input')
+          ? 'artifact' as const : 'implementation' as const;
+        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${run.origin?.message_id ?? 'unknown'}`;
+        void this.deps.journal.captureFeedback({
+          id: `${feedback.request_id}:${feedback.received_at ?? new Date().toISOString()}`,
+          run,
+          target: feedbackTarget,
+          author_principal: authorPrincipal,
+          text: feedback.content,
+          severity: 'info',
+          category: 'human_feedback',
+          disposition: 'open',
+        }).catch(() => {});
+      }
+
       const handler = this.handlerRegistry.resolve({
         event_type: 'thread_message',
         stage: routingStage,

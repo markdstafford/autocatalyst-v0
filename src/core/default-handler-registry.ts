@@ -102,7 +102,7 @@ export interface DefaultHandlerRegistryDeps {
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
   workspacePruner?: Pick<WorkspacePruner, 'prune'>;
   autoPruneWorkspace?: boolean;
-  journal?: Pick<RunJournal, 'captureSession'>;
+  journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
