@@ -3,7 +3,7 @@
  * Verified at compile time via `tsc --noEmit` — no runtime assertions needed.
  */
 import { describe, it, expect } from 'vitest';
-import type { WorkflowConfig, AiConfig, CredentialConfig, EndpointConfig, ProfileConfig, RoutingConfig } from '../../src/types/config.js';
+import type { WorkflowConfig, AiConfig, CredentialConfig, EndpointConfig, ProfileConfig, RoutingConfig, JournalConfig } from '../../src/types/config.js';
 
 // T1: WorkflowConfig with anthropic api_key credential satisfies the type
 const _t1: WorkflowConfig = {
@@ -44,6 +44,22 @@ const _t5: AiConfig = {
   routing: {},
 };
 void _t5;
+
+// T6: WorkflowConfig with journal config satisfies the type
+const _t6: WorkflowConfig = {
+  ai: {
+    credentials: [],
+    endpoints: [],
+    profiles: [],
+    routing: {},
+  },
+  journal: { enabled: false },
+} satisfies WorkflowConfig;
+void _t6;
+
+// T7: JournalConfig with no fields satisfies the type
+const _t7: JournalConfig = {};
+void _t7;
 
 // Suppress unused import warnings
 void (null as unknown as EndpointConfig);

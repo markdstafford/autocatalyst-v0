@@ -536,6 +536,30 @@ describe('getSpecReviewPolicy', () => {
   });
 });
 
+// ─── journal config validation ───────────────────────────────────────────────
+
+function minimalConfig(overrides: Partial<WorkflowConfig> = {}): WorkflowConfig {
+  return { ...overrides } as WorkflowConfig;
+}
+
+describe('journal config validation', () => {
+  it('accepts missing journal config', () => {
+    expect(() => validateConfig(minimalConfig())).not.toThrow();
+  });
+
+  it.each([true, false])('accepts boolean journal.enabled=%s', enabled => {
+    expect(() => validateConfig(minimalConfig({ journal: { enabled } }))).not.toThrow();
+  });
+
+  it('rejects non-object journal config', () => {
+    expect(() => validateConfig({ ...minimalConfig(), journal: 'yes' } as WorkflowConfig)).toThrow('journal must be an object');
+  });
+
+  it('rejects non-boolean journal.enabled with a clear error', () => {
+    expect(() => validateConfig({ ...minimalConfig(), journal: { enabled: 'yes' } } as WorkflowConfig)).toThrow('journal.enabled must be a boolean');
+  });
+});
+
 // ─── isWorkspaceAutoPruneEnabled ─────────────────────────────────────────────
 
 describe('isWorkspaceAutoPruneEnabled', () => {

@@ -185,6 +185,17 @@ export function validateConfig(config: WorkflowConfig): void {
     }
   }
 
+  const rawJournal = (config as Record<string, unknown>)['journal'];
+  if (rawJournal !== undefined && rawJournal !== null) {
+    if (typeof rawJournal !== 'object' || Array.isArray(rawJournal)) {
+      throw new Error('journal must be an object');
+    }
+    const journal = rawJournal as Record<string, unknown>;
+    if (journal['enabled'] !== undefined && typeof journal['enabled'] !== 'boolean') {
+      throw new Error('journal.enabled must be a boolean');
+    }
+  }
+
   const rawSpecReview = (config as Record<string, unknown>)['spec_review'];
   if (rawSpecReview !== undefined && rawSpecReview !== null) {
     if (typeof rawSpecReview !== 'object' || Array.isArray(rawSpecReview)) {
