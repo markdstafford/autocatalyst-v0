@@ -1,5 +1,5 @@
 import type pino from 'pino';
-import type { ImplementationAgent } from '../../types/ai.js';
+import type { ImplementationAgent, AgentSessionCaptureFn } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { FeedbackItem, ImplementationReviewPublisher } from '../../types/impl-feedback-page.js';
 import type { Run, RunStage } from '../../types/runs.js';
@@ -8,6 +8,7 @@ import { artifactPath } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface ImplementationFeedbackDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -19,6 +20,7 @@ export interface ImplementationFeedbackDeps {
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error' | 'debug'>;
   branchGuard?: BranchGuard;
   reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export type ImplementationFeedbackResult =
@@ -55,12 +57,15 @@ export class ImplementationFeedbackHandler {
 
     let result;
     try {
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       result = await this.deps.implementer.implement(
         localPath,
         run.workspace_path,
         additionalContext.value,
         onProgress,
-        { run_id: run.id, request_id: run.request_id, onAgentRequest },
+        { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession },
       );
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);

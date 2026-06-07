@@ -1,8 +1,9 @@
 import type pino from 'pino';
-import type { QuestionAnsweringAgent } from '../../types/ai.js';
+import type { QuestionAnsweringAgent, AgentSessionCaptureFn } from '../../types/ai.js';
 import type { Run } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { isAiActiveStage, makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface QuestionDeps {
   questionAnswerer?: Pick<QuestionAnsweringAgent, 'answer'>;
@@ -10,6 +11,7 @@ export interface QuestionDeps {
   postError: (conversation: ConversationRef, text: string) => Promise<void>;
   persist?: () => void;
   logger: Pick<pino.Logger, 'info' | 'error'>;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export interface QuestionResult {
@@ -31,8 +33,11 @@ export class QuestionHandler {
 
     let response: string;
     if (this.deps.questionAnswerer) {
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       try {
-        response = await this.deps.questionAnswerer.answer(content, { run_id: run.id, request_id: run.request_id, onAgentRequest });
+        response = await this.deps.questionAnswerer.answer(content, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession });
       } catch (err) {
         this.deps.logger.error({ event: 'question.answer_failed', run_id: run.id, error: String(err) }, 'Failed to answer question');
         await this.deps.postError(conversation, QUESTION_UNAVAILABLE_MESSAGE);

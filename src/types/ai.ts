@@ -5,6 +5,21 @@ import type { RunStage } from './runs.js';
 import type { TelemetryContext } from '../core/ai/telemetry-context.js';
 import type { NormalizedTokenUsage } from './journal.js';
 
+export type AgentSessionCaptureFn = (data: {
+  phase: string | null;
+  step: AgentTaskKind | string;
+  ts_start: string;
+  ts_end: string;
+  model: { provider: string; name: string | null };
+  inference: { effort: AgentEffort | null; thinking: AgentThinking | null };
+  tokens: NormalizedTokenUsage | null;
+  assistant_turns: number | null;
+  tool_calls: number | null;
+  tool_results: number | null;
+  outcome: 'ok' | 'failed' | 'incomplete';
+  runner: 'anthropic_agent' | 'openai_agent';
+}) => void;
+
 export type AgentTaskKind =
   | 'intent.classify'
   | 'artifact.create'
@@ -36,7 +51,7 @@ export interface AgentServiceTelemetry {
   run_id?: string;
   request_id?: string;
   phase?: string;
-  captureSession?: unknown;
+  captureSession?: AgentSessionCaptureFn;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
 }
 

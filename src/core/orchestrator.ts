@@ -607,6 +607,7 @@ export class OrchestratorImpl implements Orchestrator {
       validatePlanPath: this.deps.validatePlanPath,
       autoPruneWorkspace: this.deps.autoPruneWorkspace,
       workspacePruner: this.deps.workspacePruner,
+      journal: this.deps.journal,
     });
   }
 

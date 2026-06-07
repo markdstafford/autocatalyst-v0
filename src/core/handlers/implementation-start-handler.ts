@@ -1,5 +1,5 @@
 import type pino from 'pino';
-import type { ImplementationAgent } from '../../types/ai.js';
+import type { ImplementationAgent, AgentSessionCaptureFn } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { ImplementationReviewPublisher } from '../../types/impl-feedback-page.js';
 import { titleFromArtifactPath } from '../../types/publisher.js';
@@ -9,6 +9,7 @@ import { requireArtifactRefs, artifactPublishedUrl } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface ImplementationStartDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -20,6 +21,7 @@ export interface ImplementationStartDeps {
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
   reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export type ImplementationStartResult =
@@ -63,12 +65,15 @@ export class ImplementationStartHandler {
 
     let result;
     try {
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       result = await this.deps.implementer.implement(
         refs.local_path,
         run.workspace_path,
         additionalContext,
         onProgress,
-        { run_id: run.id, request_id: run.request_id, onAgentRequest },
+        { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession },
         planPath,
       );
     } catch (err) {

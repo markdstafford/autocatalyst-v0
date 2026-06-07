@@ -6,6 +6,8 @@ import type { Request } from '../../types/events.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import { channelKey, type ConversationRef } from '../../types/channel.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { AgentSessionCaptureFn } from '../../types/ai.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface IssueFilingDeps {
   workspaceManager: Pick<WorkspaceManager, 'create' | 'destroy'>;
@@ -18,6 +20,7 @@ export interface IssueFilingDeps {
   reactToRunMessage?: (run: Run, reaction: string) => Promise<void>;
   reacjiComplete?: string | null;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export type IssueFilingResult = { status: 'done' } | { status: 'failed' };
@@ -58,7 +61,10 @@ export class IssueFilingHandler {
 
     let result: FilingResult;
     try {
-      result = await this.deps.issueFiler.file(request, workspace_path, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest });
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
+      result = await this.deps.issueFiler.file(request, workspace_path, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession });
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
       await this.deps.failRun(run, request.conversation, err);

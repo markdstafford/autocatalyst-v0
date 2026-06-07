@@ -4,6 +4,7 @@ import type { IssueFiler } from '../types/issue-filing.js';
 import type { IssueManager, PRManager } from '../types/issue-tracker.js';
 import type { PRTitleGenerator } from './ai/pr-title-generator.js';
 import type { ArtifactAuthoringAgent, ImplementationAgent, ImplementationPlanningAgent, QuestionAnsweringAgent } from '../types/ai.js';
+import type { RunJournal } from './journal/run-journal.js';
 import type { Request, ThreadMessage } from '../types/events.js';
 import type { ConversationRef } from '../types/channel.js';
 import type { FeedbackSource } from '../types/feedback-source.js';
@@ -101,6 +102,7 @@ export interface DefaultHandlerRegistryDeps {
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
   workspacePruner?: Pick<WorkspacePruner, 'prune'>;
   autoPruneWorkspace?: boolean;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
@@ -192,6 +194,7 @@ async function startArtifactCreation(
     logger: deps.logger,
     branchGuard,
     specReviewCoordinator: deps.specReviewCoordinator,
+    journal: deps.journal,
   });
   await handler.handle(run, request, intent);
 }
@@ -237,6 +240,7 @@ async function handleArtifactFeedback(
     logger: deps.logger,
     branchGuard,
     specReviewCoordinator: deps.specReviewCoordinator,
+    journal: deps.journal,
   });
   await handler.handle(run, feedback);
 }
@@ -258,6 +262,7 @@ async function runImplementation(
     logger: deps.logger,
     branchGuard,
     reviewCoordinator: deps.reviewCoordinator,
+    journal: deps.journal,
   });
   await handler.handle(run, feedback, additionalContext);
 }
@@ -280,6 +285,7 @@ async function runPlanning(
     persist: deps.persist,
     logger: deps.logger,
     validatePlanPath: deps.validatePlanPath,
+    journal: deps.journal,
   });
   return handler.handle(run, feedback, additionalContext);
 }
@@ -301,6 +307,7 @@ async function handleImplementationFeedback(
     logger: deps.logger,
     branchGuard,
     reviewCoordinator: deps.reviewCoordinator,
+    journal: deps.journal,
   });
   await handler.handle(run, feedback, routingStage);
 }
@@ -361,6 +368,7 @@ async function startFilingPipeline(deps: DefaultHandlerRegistryDeps, run: Run, r
     reactToRunMessage: deps.reactToRunMessage,
     reacjiComplete: deps.reacjiComplete,
     logger: deps.logger,
+    journal: deps.journal,
   });
   await handler.handle(run, request);
 }
@@ -377,6 +385,7 @@ async function handleQuestion(
     postError: deps.postError,
     persist: deps.persist,
     logger: deps.logger,
+    journal: deps.journal,
   });
   return handler.handle(content, conversation, run);
 }
