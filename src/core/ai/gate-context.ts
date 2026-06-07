@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { redactSecrets } from '../journal/redaction.js';
 
 const exec = promisify(execFile);
 
@@ -83,13 +84,13 @@ export async function buildGateContext(context: ConvergenceGateContext): Promise
     .map(f => f.replace(/\\/g, '/'))
     .sort();
 
-  const fullDiff = trackedDiff + untrackedDiff;
+  const redactedDiff = redactSecrets(trackedDiff + untrackedDiff);
 
   return {
     gate,
     base_ref,
-    diff: fullDiff,
+    diff: redactedDiff,
     changed_files: allChangedFiles,
-    diff_byte_count: Buffer.byteLength(fullDiff, 'utf8'),
+    diff_byte_count: Buffer.byteLength(redactedDiff, 'utf8'),
   };
 }
