@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { RunJournal } from '../../../src/core/journal/run-journal.js';
 import type { JournalStream, JournalWriter } from '../../../src/types/journal.js';
 import type { Run } from '../../../src/types/runs.js';

@@ -51,13 +51,6 @@ export interface CaptureFeedbackParams {
   thread?: Array<{ author_principal: string | null; ts: string | null; text: string }>;
 }
 
-export interface CaptureInboundMessageParams {
-  run: Run;
-  message: { content: string; received_at?: string };
-  intent: Intent | null;
-  classificationStatus: JournalClassificationStatus;
-}
-
 export class RunJournal {
   private readonly writer: JournalWriter;
   private readonly sessionSeq = new Map<string, number>();
