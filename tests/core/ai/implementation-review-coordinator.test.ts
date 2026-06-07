@@ -888,4 +888,155 @@ describe('ImplementationReviewCoordinator', () => {
       expect(run.gate_exchanges![0].converged).toBe(false);
     });
   });
+
+  describe('runLayeredImplementation — telemetry and progress', () => {
+    function makeLayeredDeps(overrides: Record<string, unknown> = {}) {
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile, ...overrides });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      return deps;
+    }
+
+    it('logs implementation.layered.started with run_id, depth, enabled_altitudes, and model_session_budget', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const started = infoCalls.find(l => l['event'] === 'implementation.layered.started');
+
+      expect(started).toBeDefined();
+      expect(started!['run_id']).toBe('run-001');
+      expect(started!['enabled_altitudes']).toEqual(['layout', 'build']);
+      expect(typeof started!['model_session_budget']).toBe('number');
+    });
+
+    it('logs implementation.layer.started for each named altitude', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const layerStarted = infoCalls.filter(l => l['event'] === 'implementation.layer.started');
+
+      // Should have one layer.started per altitude
+      expect(layerStarted).toHaveLength(2);
+      expect(layerStarted[0]!['gate']).toBe('layout');
+      expect(layerStarted[1]!['gate']).toBe('build');
+    });
+
+    it('logs implementation.layer.completed when altitude converges', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const layerCompleted = infoCalls.filter(l => l['event'] === 'implementation.layer.completed');
+
+      expect(layerCompleted).toHaveLength(2);
+      expect(layerCompleted[0]!['gate']).toBe('layout');
+      expect(typeof layerCompleted[0]!['elapsed_ms']).toBe('number');
+    });
+
+    it('progress message includes depth information when layered mode is activated', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const progressMessages: string[] = [];
+      const onProgress = vi.fn().mockImplementation((msg: string) => { progressMessages.push(msg); return Promise.resolve(); });
+
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const depthMsg = progressMessages.find(m => m.includes('Layered implementation enabled'));
+      expect(depthMsg).toBeDefined();
+      expect(depthMsg).toContain('layout+build');
+    });
+
+    it('progress message for altitude start includes altitude label and proposer profile', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const progressMessages: string[] = [];
+      const onProgress = vi.fn().mockImplementation((msg: string) => { progressMessages.push(msg); return Promise.resolve(); });
+
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const layoutMsg = progressMessages.find(m => m.includes('Layout pass started'));
+      expect(layoutMsg).toBeDefined();
+    });
+
+    it('progress callback that throws does not alter review outcome', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      // onProgress throws every time
+      const onProgress = vi.fn().mockRejectedValue(new Error('progress delivery failed'));
+
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      // Review should still succeed despite progress failures
+      expect(result.status).toBe('complete');
+      // progress_failed should be logged, not thrown
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'progress_failed' }),
+        expect.any(String),
+      );
+    });
+
+    it('progress failure in sendProgress does not propagate as exception', async () => {
+      // Test specifically the sendProgress path inside the convergence loop
+      let callCount = 0;
+      const readFile = vi.fn().mockImplementation(async () => {
+        const result = callCount === 0
+          ? { status: 'findings', summary: 'Round 1.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Layout issue.' }] }
+          : { status: 'no_findings', summary: 'Clean.', findings: [] };
+        callCount++;
+        return JSON.stringify(result);
+      });
+      const deps = makeDeps(undefined, {
+        readFile,
+        implementer: makeImplementer(makeCompleteResult({ review_responses: [{ id: 'L1', disposition: 'fixed', response: 'Fixed.' }] })),
+      });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const onProgress = vi.fn().mockRejectedValue(new Error('network error'));
+
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      expect(result.status).toBe('complete');
+    });
+  });
 });

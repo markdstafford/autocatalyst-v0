@@ -32,7 +32,7 @@ import {
   drainAgentRunner,
 } from './agent-services.js';
 import { agentProfileSummary } from './routing-policy.js';
-import { allowedCategoriesForGate, type LayeredConvergenceGate } from './layered-convergence-policy.js';
+import { allowedCategoriesForGate, gateLabel, type LayeredConvergenceGate } from './layered-convergence-policy.js';
 import { filterLayeredFindings } from './layered-finding-filter.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
@@ -360,6 +360,26 @@ export class ImplementationReviewCoordinator {
     }
 
     // Layered altitudes: run each altitude convergence loop in order.
+    const depth = altitudes.join('+');
+    this.deps.logger.info(
+      {
+        event: 'implementation.layered.started',
+        run_id: params.run.id,
+        depth,
+        enabled_altitudes: [...altitudes],
+        model_session_budget: 24,
+      },
+      'Layered implementation enabled',
+    );
+    try {
+      await params.onProgress?.(`Layered implementation enabled — depth ${depth}`);
+    } catch (err) {
+      this.deps.logger.warn(
+        { event: 'progress_failed', run_id: params.run.id, error: String(err) },
+        'Progress message failed to send',
+      );
+    }
+
     let currentResult = params.implementation_result;
     for (const altitude of altitudes) {
       const result = await this.runConvergenceLoop(
@@ -430,9 +450,28 @@ export class ImplementationReviewCoordinator {
       'Starting convergence review',
     );
 
+    // Layer-started telemetry and progress message for layered altitudes.
+    const isNamedGate = gate !== 'initial' && gate !== 'final';
+    if (isNamedGate) {
+      const altLabel = gateLabel(gate as LayeredConvergenceGate);
+      this.deps.logger.info(
+        { event: 'implementation.layer.started', run_id: run.id, gate, proposer_profile: proposerSummary.profile },
+        'Layer altitude started',
+      );
+      try {
+        await onProgress?.(`${altLabel} pass started with ${proposerSummary.profile}`);
+      } catch (err) {
+        this.deps.logger.warn(
+          { event: 'progress_failed', run_id: run.id, gate, error: String(err) },
+          'Progress message failed to send',
+        );
+      }
+    }
+
     let currentResult: ImplementationResult = implementation_result;
     const previousSignatures: Set<string>[] = [];
     const previousBlockingCounts: number[] = [];
+    const layerStart = performance.now();
 
     for (let round = 1; round <= maxRounds; round++) {
       const roundStart = performance.now();
@@ -571,13 +610,25 @@ export class ImplementationReviewCoordinator {
           requires_human_retest: reviewResult.requires_human_retest ?? false,
         }, captureFeedback);
 
+        const layerElapsed_ms = Math.round(performance.now() - layerStart);
         this.deps.logger.info(
-          { event: 'implementation.review.converged', phase, gate, round, run_id: run.id },
+          { event: 'implementation.review.converged', phase, gate, round, run_id: run.id, rounds_used: round, finding_count: effectiveFindings.length, filtered_count: effectiveFindings.length - blockingFindings.length, elapsed_ms: layerElapsed_ms },
           'Implementation review converged',
         );
+        if (isNamedGate) {
+          this.deps.logger.info(
+            { event: 'implementation.layer.completed', run_id: run.id, gate, elapsed_ms: layerElapsed_ms },
+            'Layer altitude completed',
+          );
+        }
 
-        const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
-        await this.sendProgress(onProgress, run, phase, round, `${phaseLabel} converged after ${round} round${round === 1 ? '' : 's'}`);
+        const altLabel = isNamedGate ? gateLabel(gate as LayeredConvergenceGate) : (phase === 'initial' ? 'Initial review' : 'Final review');
+        const convergedMsg = gate === 'build'
+          ? `Build converged after ${round} round${round === 1 ? '' : 's'} — creating testing guide`
+          : isNamedGate
+            ? `${altLabel} converged after ${round} round${round === 1 ? '' : 's'} — checkpointing layer`
+            : `${altLabel} converged after ${round} round${round === 1 ? '' : 's'}`;
+        await this.sendProgress(onProgress, run, phase, round, gate, convergedMsg);
 
         return currentResult;
       }
@@ -600,13 +651,14 @@ export class ImplementationReviewCoordinator {
           requires_human_retest: reviewResult.requires_human_retest ?? false,
         }, captureFeedback);
 
+        const oscillationElapsed_ms = Math.round(performance.now() - layerStart);
         this.deps.logger.warn(
-          { event: 'implementation.review.oscillation_detected', run_id: run.id, gate, round, signature_count: this.signatureSet(reviewResult.findings).size },
+          { event: 'implementation.review.oscillation_detected', run_id: run.id, gate, round, rounds_used: round, elapsed_ms: oscillationElapsed_ms, signature_count: this.signatureSet(reviewResult.findings).size },
           'Implementation review did not converge: oscillation detected',
         );
 
-        const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
-        await this.sendProgress(onProgress, run, phase, round, `${phaseLabel} did not converge: oscillation detected after ${round} round${round === 1 ? '' : 's'}`);
+        const oscillationLabel = isNamedGate ? gateLabel(gate as LayeredConvergenceGate) : (phase === 'initial' ? 'Initial review' : 'Final review');
+        await this.sendProgress(onProgress, run, phase, round, gate, `${oscillationLabel} did not converge: oscillation detected after ${round} round${round === 1 ? '' : 's'}`);
 
         return { status: 'failed', error: `Implementation review ${phase} did not converge because oscillation was detected` };
       }
@@ -629,13 +681,14 @@ export class ImplementationReviewCoordinator {
           requires_human_retest: reviewResult.requires_human_retest ?? false,
         }, captureFeedback);
 
+        const maxRoundsElapsed_ms = Math.round(performance.now() - layerStart);
         this.deps.logger.warn(
-          { event: 'implementation.review.non_converged', phase, gate, round, run_id: run.id, reason: 'max_rounds' },
+          { event: 'implementation.review.non_converged', phase, gate, round, run_id: run.id, reason: 'max_rounds', rounds_used: round, elapsed_ms: maxRoundsElapsed_ms },
           'Implementation review did not converge: max_rounds reached',
         );
 
-        const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
-        await this.sendProgress(onProgress, run, phase, round, `${phaseLabel} did not converge after ${maxRounds} round${maxRounds === 1 ? '' : 's'}`);
+        const maxRoundsLabel = isNamedGate ? gateLabel(gate as LayeredConvergenceGate) : (phase === 'initial' ? 'Initial review' : 'Final review');
+        await this.sendProgress(onProgress, run, phase, round, gate, `${maxRoundsLabel} did not converge after ${maxRounds} round${maxRounds === 1 ? '' : 's'}`);
 
         return { status: 'failed', error: `Implementation review ${phase} did not converge after ${maxRounds} rounds` };
       }
@@ -720,13 +773,14 @@ export class ImplementationReviewCoordinator {
       previousSignatures.push(this.signatureSet(blockingFindings));
       previousBlockingCounts.push(blockingFindings.length);
 
-      const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
+      const reviseLabel = isNamedGate ? gateLabel(gate as LayeredConvergenceGate) : (phase === 'initial' ? 'Initial review' : 'Final review');
       await this.sendProgress(
         onProgress,
         run,
         phase,
         round,
-        `${phaseLabel} round ${round} returned ${blockingFindings.length} finding${blockingFindings.length === 1 ? '' : 's'} — asking proposer to revise`,
+        gate,
+        `${reviseLabel} review round ${round} returned ${blockingFindings.length} finding${blockingFindings.length === 1 ? '' : 's'} — asking proposer to revise`,
       );
     }
 
@@ -908,6 +962,7 @@ export class ImplementationReviewCoordinator {
     run: Run,
     phase: 'initial' | 'final',
     round: number,
+    gate: 'initial' | 'final' | LayeredConvergenceGate,
     message: string,
   ): Promise<void> {
     if (!onProgress) return;
@@ -915,7 +970,7 @@ export class ImplementationReviewCoordinator {
       await onProgress(message);
     } catch (err) {
       this.deps.logger.warn(
-        { event: 'progress_failed', phase, gate: phase, round, run_id: run.id, error: String(err) },
+        { event: 'progress_failed', phase, gate, round, run_id: run.id, error: String(err) },
         'Progress message failed to send',
       );
     }
