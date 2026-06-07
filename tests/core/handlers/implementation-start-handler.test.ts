@@ -462,6 +462,27 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     expect(deps.failRun).toHaveBeenCalled();
   });
 
+  it('fails run when coordinator returns non-convergence failed result', async () => {
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockResolvedValue({
+        status: 'failed',
+        error: 'Implementation review initial did not converge after 2 rounds',
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalled();
+    expect(deps.implFeedbackPage?.create).not.toHaveBeenCalled();
+    expect(deps.postMessage).not.toHaveBeenCalledWith(
+      TEST_CONVERSATION,
+      expect.stringContaining('Implementation complete'),
+    );
+  });
+
   it('proceeds normally without coordinator when not configured', async () => {
     const { handler, deps } = makeHandler({ reviewCoordinator: undefined });
     const run = makeRun();

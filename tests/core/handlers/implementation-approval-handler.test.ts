@@ -453,6 +453,23 @@ describe('ImplementationApprovalHandler with reviewCoordinator', () => {
     expect(deps.failRun).toHaveBeenCalled();
   });
 
+  it('fails run when final review returns non-convergence failed result', async () => {
+    const coord = {
+      runFinalReview: vi.fn().mockResolvedValue({
+        status: 'failed',
+        error: 'Implementation review final did not converge after 2 rounds',
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalled();
+    expect(deps.prManager.createPR).not.toHaveBeenCalled();
+  });
+
   it('proceeds to PR creation without coordinator when not configured', async () => {
     const { handler, deps } = makeHandler({ reviewCoordinator: undefined });
     const result = await handler.handle(makeRun(), makeFeedback());
