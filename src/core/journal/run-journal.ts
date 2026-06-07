@@ -70,12 +70,12 @@ export class RunJournal {
 
   async captureInboundMessage(
     run: Run,
-    message: { content: string; received_at?: string },
+    message: { content: string; received_at?: string; author?: string },
     intent: Intent | null,
     classificationStatus: JournalClassificationStatus,
   ): Promise<void> {
     const identity = identityForRun(run);
-    const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${run.origin?.message_id ?? 'unknown'}`;
+    const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${message.author ?? 'unknown'}`;
     const ts = message.received_at ?? new Date().toISOString();
 
     const record: Omit<JournalMessageRecord, 'seq' | 'writer_id'> = {

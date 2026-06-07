@@ -427,7 +427,7 @@ export class OrchestratorImpl implements Orchestrator {
         const stage2ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
         void this.deps.journal?.captureInboundMessage(
           run,
-          { content: request.content },
+          { content: request.content, author: request.author },
           intent,
           stage2ClassificationStatus,
         ).catch(() => {});
@@ -478,7 +478,7 @@ export class OrchestratorImpl implements Orchestrator {
       const stage1ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
       void this.deps.journal?.captureInboundMessage(
         run,
-        { content: request.content },
+        { content: request.content, author: request.author },
         intent,
         stage1ClassificationStatus,
       ).catch(() => {});
@@ -552,7 +552,7 @@ export class OrchestratorImpl implements Orchestrator {
           this.captureDirectSession(run, 'intent.classify', classifyTs3, 'failed');
           void this.deps.journal?.captureInboundMessage(
             run,
-            { content: feedback.content },
+            { content: feedback.content, author: feedback.author },
             null,
             'failed',
           ).catch(() => {});
@@ -566,7 +566,7 @@ export class OrchestratorImpl implements Orchestrator {
       const threadMsgClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
       void this.deps.journal?.captureInboundMessage(
         run,
-        { content: feedback.content },
+        { content: feedback.content, author: feedback.author },
         intent,
         threadMsgClassificationStatus,
       ).catch(() => {});
@@ -576,7 +576,7 @@ export class OrchestratorImpl implements Orchestrator {
       if (FEEDBACK_INTENTS.has(intent) && this.deps.journal) {
         const feedbackTarget = (routingStage === 'reviewing_spec' || routingStage === 'awaiting_planning_input')
           ? 'artifact' as const : 'implementation' as const;
-        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${feedback.origin?.message_id ?? 'unknown'}`;
+        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${feedback.author ?? 'unknown'}`;
         void this.deps.journal.captureFeedback({
           id: `${feedback.request_id}:${feedback.received_at ?? new Date().toISOString()}`,
           run,
