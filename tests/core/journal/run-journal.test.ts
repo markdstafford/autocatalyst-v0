@@ -6,7 +6,8 @@ import type {
   JournalRunEventRecord,
   NormalizedTokenUsage,
 } from '../../../src/types/journal.js';
-import { JournalWriter, NoopJournalWriter } from '../../../src/types/journal.js';
+import type { JournalWriter } from '../../../src/types/journal.js';
+import { NoopJournalWriter } from '../../../src/types/journal.js';
 
 describe('journal types (compile-focused)', () => {
   it('constructs a valid JournalMessageRecord', () => {
@@ -141,6 +142,6 @@ describe('journal types (compile-focused)', () => {
     await writer.append('feedback', { seq: 3 });
     await writer.append('run-events', { seq: 4 });
 
-    expect(true).toBe(true); // all calls resolved without error
+    // all calls resolved without error — no assertion needed
   });
 });
