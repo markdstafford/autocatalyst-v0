@@ -14,6 +14,8 @@ import type { ImplementationReviewCoordinator } from '../ai/implementation-revie
 import type { AgentSessionCaptureFn, GateReviewExchange, ImplementationResult, ImplementationReviewExchange, IntentClassifyResult } from '../../types/ai.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
+import { ModelSessionBudget, type BudgetWriter } from '../journal/model-session-budget.js';
+import { type ResolvedImplementationConvergencePolicy } from '../ai/layered-convergence-policy.js';
 
 export interface ImplementationApprovalDeps {
   specCommitter?: Pick<SpecCommitter, 'updateStatus'>;
@@ -30,6 +32,8 @@ export interface ImplementationApprovalDeps {
   branchGuard?: BranchGuard;
   reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runFinalReview'>;
   journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
+  convergencePolicy?: ResolvedImplementationConvergencePolicy;
+  budgetWriter?: BudgetWriter;
 }
 
 export type ImplementationApprovalResult =
@@ -141,6 +145,14 @@ export class ImplementationApprovalHandler {
             }
           }
         : undefined;
+      const sessionBudget = this.deps.convergencePolicy
+        ? new ModelSessionBudget({
+            runId: run.id,
+            requestId: run.request_id,
+            limit: this.deps.convergencePolicy.max_model_sessions_per_run,
+            writer: this.deps.budgetWriter ?? { append: async () => {} },
+          })
+        : undefined;
       const reviewedResult = await this.deps.reviewCoordinator.runFinalReview({
         run,
         artifact_path: localPath ?? '',
@@ -149,6 +161,7 @@ export class ImplementationApprovalHandler {
         onAgentRequest,
         captureSession: captureSessionForReview,
         captureFeedback: captureFeedbackForReview,
+        sessionBudget,
       });
 
       if (reviewedResult.status === 'needs_input') {

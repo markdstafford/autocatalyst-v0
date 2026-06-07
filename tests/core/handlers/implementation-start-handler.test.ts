@@ -620,3 +620,59 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     );
   });
 });
+
+describe('ImplementationStartHandler model-session budget enforcement', () => {
+  it('fails the run before calling implementer when max_model_sessions_per_run is 0', async () => {
+    const appendSpy = vi.fn().mockResolvedValue(undefined);
+    const { handler, deps } = makeHandler({
+      convergencePolicy: {
+        enabled: true,
+        allow_same_model: false,
+        depth: 'build_only',
+        feedback_depth: 'build_only',
+        max_model_sessions_per_run: 0,
+      },
+      budgetWriter: { append: appendSpy },
+    });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.implementer.implement).not.toHaveBeenCalled();
+    expect(deps.failRun).toHaveBeenCalled();
+  });
+
+  it('passes an exhausted sessionBudget to the coordinator when limit is 1', async () => {
+    const appendSpy = vi.fn().mockResolvedValue(undefined);
+    let capturedBudget: { used(): number; limit(): number } | undefined;
+    const coord = {
+      runInitialReview: vi.fn().mockImplementation(async (params: { sessionBudget?: { used(): number; limit(): number } }) => {
+        capturedBudget = params.sessionBudget;
+        return {
+          status: 'complete',
+          summary: 'Reviewed ok.',
+          testing_instructions: 'npm test',
+        };
+      }),
+    };
+    const { handler } = makeHandler({
+      reviewCoordinator: coord,
+      convergencePolicy: {
+        enabled: true,
+        allow_same_model: false,
+        depth: 'build_only',
+        feedback_depth: 'build_only',
+        max_model_sessions_per_run: 1,
+      },
+      budgetWriter: { append: appendSpy },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(capturedBudget).toBeDefined();
+    expect(capturedBudget!.used()).toBe(1);
+    expect(capturedBudget!.limit()).toBe(1);
+  });
+});

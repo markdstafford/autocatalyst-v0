@@ -13,7 +13,7 @@ export interface ReservationResult {
   limit: number;
 }
 
-interface BudgetWriter {
+export interface BudgetWriter {
   append(stream: string, record: unknown): Promise<void>;
 }
 

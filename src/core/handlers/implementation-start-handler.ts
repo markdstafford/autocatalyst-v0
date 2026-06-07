@@ -14,6 +14,7 @@ import {
   altitudesForDepth,
   type ResolvedImplementationConvergencePolicy,
 } from '../ai/layered-convergence-policy.js';
+import { ModelSessionBudget, type BudgetWriter } from '../journal/model-session-budget.js';
 
 export interface ImplementationStartDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -27,6 +28,7 @@ export interface ImplementationStartDeps {
   reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview' | 'runLayeredImplementation'>;
   convergencePolicy?: ResolvedImplementationConvergencePolicy;
   journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
+  budgetWriter?: BudgetWriter;
 }
 
 export type ImplementationStartResult =
@@ -57,6 +59,15 @@ export class ImplementationStartHandler {
         );
       });
 
+    const sessionBudget = this.deps.convergencePolicy
+      ? new ModelSessionBudget({
+          runId: run.id,
+          requestId: run.request_id,
+          limit: this.deps.convergencePolicy.max_model_sessions_per_run,
+          writer: this.deps.budgetWriter ?? { append: async () => {} },
+        })
+      : undefined;
+
     if (run.impl_feedback_ref) {
       await this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'in_progress').catch(err =>
         this.deps.logger.error(
@@ -71,6 +82,17 @@ export class ImplementationStartHandler {
       ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: data.round ?? 1, role: data.role ?? null, gate: data.gate ?? null }).catch(() => {}); }
       : undefined;
 
+    let implReservationId: string | undefined;
+    if (sessionBudget) {
+      try {
+        const r = await sessionBudget.reserve({ gate: 'initial', role: 'proposer', round: 1, passKind: 'initial' });
+        implReservationId = r.session_id;
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return { status: 'failed' };
+      }
+    }
+
     let result;
     try {
       result = await this.deps.implementer.implement(
@@ -81,7 +103,13 @@ export class ImplementationStartHandler {
         { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession },
         planPath,
       );
+      if (sessionBudget && implReservationId) {
+        await sessionBudget.complete(implReservationId, 'ok').catch(() => {});
+      }
     } catch (err) {
+      if (sessionBudget && implReservationId) {
+        await sessionBudget.complete(implReservationId, 'failed').catch(() => {});
+      }
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };
     }
@@ -166,6 +194,7 @@ export class ImplementationStartHandler {
         onAgentRequest,
         captureSession,
         captureFeedback,
+        sessionBudget,
       };
       const policy = this.deps.convergencePolicy;
       const useLayered =

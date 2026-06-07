@@ -507,9 +507,11 @@ export class ImplementationReviewCoordinator {
           : buildFinalReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext);
 
       // Reserve model-session budget slot before critic call
+      let criticSessionId: string | undefined;
       if (sessionBudget) {
         try {
-          await sessionBudget.reserve({ gate: String(gate), role: 'critic', round, passKind: phase === 'initial' ? 'initial' : 'final' });
+          const r = await sessionBudget.reserve({ gate: String(gate), role: 'critic', round, passKind: phase === 'initial' ? 'initial' : 'final' });
+          criticSessionId = r.session_id;
         } catch (err) {
           this.deps.logger.warn(
             { event: 'implementation.review.budget_exhausted', run_id: run.id, gate, role: 'critic', round, error: String(err) },
@@ -568,8 +570,14 @@ export class ImplementationReviewCoordinator {
 
         const reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
         reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
+        if (sessionBudget && criticSessionId) {
+          await sessionBudget.complete(criticSessionId, 'ok').catch(() => {});
+        }
         this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'ok', drainSummary, { role: 'critic', round, gate });
       } catch (err) {
+        if (sessionBudget && criticSessionId) {
+          await sessionBudget.complete(criticSessionId, 'failed').catch(() => {});
+        }
         this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'failed', drainSummary, { role: 'critic', round, gate });
         this.deps.logger.error(
           { event: 'implementation.review.round_failed', phase, gate, round, run_id: run.id, error: String(err) },
@@ -737,9 +745,11 @@ export class ImplementationReviewCoordinator {
       };
 
       // Reserve model-session budget slot before proposer revision call
+      let proposerSessionId: string | undefined;
       if (sessionBudget) {
         try {
-          await sessionBudget.reserve({ gate: String(gate), role: 'proposer', round, passKind: phase === 'initial' ? 'initial' : 'final' });
+          const r = await sessionBudget.reserve({ gate: String(gate), role: 'proposer', round, passKind: phase === 'initial' ? 'initial' : 'final' });
+          proposerSessionId = r.session_id;
         } catch (err) {
           this.deps.logger.warn(
             { event: 'implementation.review.budget_exhausted', run_id: run.id, gate, role: 'proposer', round, error: String(err) },
@@ -759,7 +769,13 @@ export class ImplementationReviewCoordinator {
           proposerTelemetry,
         );
       } catch (err) {
+        if (sessionBudget && proposerSessionId) {
+          await sessionBudget.complete(proposerSessionId, 'failed').catch(() => {});
+        }
         return { status: 'failed', error: `Proposer response to review failed: ${String(err)}` };
+      }
+      if (sessionBudget && proposerSessionId) {
+        await sessionBudget.complete(proposerSessionId, 'ok').catch(() => {});
       }
 
       if (proposerResult.status !== 'complete') {
