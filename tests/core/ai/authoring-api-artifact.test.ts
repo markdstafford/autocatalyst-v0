@@ -65,4 +65,42 @@ describe('authoring API artifact helpers', () => {
     const source = '# Spec\n\n## Converged API\nold\n\n## Task list\n- keep\n';
     expect(removeConvergedApiSection(source)).toBe('# Spec\n\n## Task list\n- keep\n');
   });
+
+  describe('parseConvergedApiArtifact required field validation', () => {
+    it('rejects public_api item with empty symbol', () => {
+      const data = { ...artifact, public_api: [{ ...artifact.public_api[0], symbol: '' }] };
+      expect(() => parseConvergedApiArtifact(JSON.stringify(data), 'api.json')).toThrow(/public_api\[0\]\.symbol/);
+    });
+
+    it('rejects public_api item with missing symbol', () => {
+      const { symbol: _s, ...rest } = artifact.public_api[0]!;
+      const data = { ...artifact, public_api: [rest] };
+      expect(() => parseConvergedApiArtifact(JSON.stringify(data), 'api.json')).toThrow(/public_api\[0\]\.symbol/);
+    });
+
+    it('rejects public_api item with empty signature', () => {
+      const data = { ...artifact, public_api: [{ ...artifact.public_api[0], signature: '' }] };
+      expect(() => parseConvergedApiArtifact(JSON.stringify(data), 'api.json')).toThrow(/public_api\[0\]\.signature/);
+    });
+
+    it('rejects public_api item with empty returns', () => {
+      const data = { ...artifact, public_api: [{ ...artifact.public_api[0], returns: '' }] };
+      expect(() => parseConvergedApiArtifact(JSON.stringify(data), 'api.json')).toThrow(/public_api\[0\]\.returns/);
+    });
+
+    it('rejects types item with empty name', () => {
+      const data = { ...artifact, types: [{ ...artifact.types[0], name: '' }] };
+      expect(() => parseConvergedApiArtifact(JSON.stringify(data), 'api.json')).toThrow(/types\[0\]\.name/);
+    });
+
+    it('rejects types item with empty shape', () => {
+      const data = { ...artifact, types: [{ ...artifact.types[0], shape: '' }] };
+      expect(() => parseConvergedApiArtifact(JSON.stringify(data), 'api.json')).toThrow(/types\[0\]\.shape/);
+    });
+
+    it('accepts empty public_api and types arrays without validation errors', () => {
+      const data = { ...artifact, public_api: [], types: [] };
+      expect(() => parseConvergedApiArtifact(JSON.stringify(data), 'api.json')).not.toThrow();
+    });
+  });
 });

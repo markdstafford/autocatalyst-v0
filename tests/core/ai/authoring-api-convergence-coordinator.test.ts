@@ -437,11 +437,9 @@ describe('AuthoringApiConvergenceCoordinator', () => {
       ).rejects.toThrow();
     });
 
-    it('with max_rounds=2 and invalid JSON on round 1, round is consumed and remaining rounds exhaust without throwing unexpectedly', async () => {
-      // When round 1 has invalid artifact JSON, it's consumed via `continue`.
-      // Round 2 skips the proposer (round !== 1) and currentArtifact is still null,
-      // so it also `continue`s. The loop exits without a result, and the coordinator
-      // throws "loop exited unexpectedly". This is the documented behavior for this scenario.
+    it('with max_rounds=2 and invalid JSON on both rounds, proposer is called twice then throws at max rounds', async () => {
+      // When round 1 parse fails, round 2 re-invokes the proposer (currentArtifact === null).
+      // If round 2 also produces invalid JSON, the coordinator throws the max-rounds parse error.
       const readFile = async (path: string, _enc: 'utf-8'): Promise<string> => {
         if (path.includes('authoring-api-artifact.json')) {
           return 'bad json';
@@ -464,15 +462,18 @@ describe('AuthoringApiConvergenceCoordinator', () => {
       });
       const coordinator = new AuthoringApiConvergenceCoordinator(deps);
 
-      // With invalid JSON on round 1, all rounds are consumed without a valid artifact,
-      // and the coordinator throws the "loop exited unexpectedly" sentinel error.
+      // Proposer is called on round 1 and round 2 (re-invoked due to null artifact).
+      // At max rounds with still-invalid JSON, throws a parse error (not "loop exited unexpectedly").
       await expect(
         coordinator.run({
           run: makeRun(),
           artifact_path: '/ws/spec.md',
           working_directory: WORKING_DIR,
         }),
-      ).rejects.toThrow();
+      ).rejects.toThrow(/invalid JSON artifact/);
+
+      // Proposer was re-invoked on round 2 since currentArtifact was null after round 1 failure
+      expect(runner.run).toHaveBeenCalledTimes(2);
     });
   });
 

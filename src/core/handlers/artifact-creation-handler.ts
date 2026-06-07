@@ -73,15 +73,27 @@ export class ArtifactCreationHandler {
 
     const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
 
+    // Fail clearly when api_convergence is enabled but required dependencies are absent
+    if (intent === 'idea' && this.deps.specAuthoringPolicy?.api_convergence.enabled === true) {
+      const missingDeps: string[] = [];
+      if (!this.deps.authoringApiConvergenceCoordinator) missingDeps.push('authoringApiConvergenceCoordinator');
+      if (typeof this.deps.artifactAuthoringAgent.createTechSpecDraft !== 'function') missingDeps.push('createTechSpecDraft');
+      if (typeof this.deps.artifactAuthoringAgent.decomposeTasks !== 'function') missingDeps.push('decomposeTasks');
+      if (missingDeps.length > 0) {
+        await this.deps.workspaceManager.destroy(workspace_path);
+        await this.deps.failRun(run, request.conversation, new Error(
+          `spec_authoring.api_convergence is enabled but required dependencies are missing: ${missingDeps.join(', ')}`,
+        ));
+        return;
+      }
+    }
+
     const useApiConvergence = intent === 'idea'
-      && this.deps.specAuthoringPolicy?.api_convergence.enabled === true
-      && this.deps.authoringApiConvergenceCoordinator != null
-      && typeof this.deps.artifactAuthoringAgent.createTechSpecDraft === 'function'
-      && typeof this.deps.artifactAuthoringAgent.decomposeTasks === 'function';
+      && this.deps.specAuthoringPolicy?.api_convergence.enabled === true;
 
     let local_path: string;
     const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
-      ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+      ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: data.round ?? 1 }).catch(() => {}); }
       : undefined;
 
     if (useApiConvergence) {

@@ -46,9 +46,18 @@ export function parseConvergedApiArtifact(content: string, path: string): Conver
       throw new Error(`Converged API artifact at "${path}": public_api[${i}] must be an object`);
     }
     const pe = item as Record<string, unknown>;
-    const symbol = typeof pe['symbol'] === 'string' && pe['symbol'] !== '' ? pe['symbol'] : '';
-    const signature = typeof pe['signature'] === 'string' && pe['signature'] !== '' ? pe['signature'] : '';
-    const returns = typeof pe['returns'] === 'string' ? pe['returns'] : '';
+    if (typeof pe['symbol'] !== 'string' || pe['symbol'].trim() === '') {
+      throw new Error(`Converged API artifact at "${path}": public_api[${i}].symbol must be a non-empty string`);
+    }
+    if (typeof pe['signature'] !== 'string' || pe['signature'].trim() === '') {
+      throw new Error(`Converged API artifact at "${path}": public_api[${i}].signature must be a non-empty string`);
+    }
+    if (typeof pe['returns'] !== 'string' || pe['returns'].trim() === '') {
+      throw new Error(`Converged API artifact at "${path}": public_api[${i}].returns must be a non-empty string`);
+    }
+    const symbol = pe['symbol'];
+    const signature = pe['signature'];
+    const returns = pe['returns'];
     const errors = Array.isArray(pe['errors']) ? (pe['errors'] as unknown[]).map(String) : [];
     const notes = typeof pe['notes'] === 'string' ? pe['notes'] : '';
     const parameters = Array.isArray(pe['parameters'])
@@ -73,8 +82,14 @@ export function parseConvergedApiArtifact(content: string, path: string): Conver
       throw new Error(`Converged API artifact at "${path}": types[${i}] must be an object`);
     }
     const te = item as Record<string, unknown>;
-    const name = typeof te['name'] === 'string' ? te['name'] : '';
-    const shape = typeof te['shape'] === 'string' ? te['shape'] : '';
+    if (typeof te['name'] !== 'string' || te['name'].trim() === '') {
+      throw new Error(`Converged API artifact at "${path}": types[${i}].name must be a non-empty string`);
+    }
+    if (typeof te['shape'] !== 'string' || te['shape'].trim() === '') {
+      throw new Error(`Converged API artifact at "${path}": types[${i}].shape must be a non-empty string`);
+    }
+    const name = te['name'];
+    const shape = te['shape'];
     const description = typeof te['description'] === 'string' ? te['description'] : '';
     return { name, shape, description };
   });

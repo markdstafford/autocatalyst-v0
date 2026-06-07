@@ -518,8 +518,8 @@ describe('ArtifactCreationHandler', () => {
       expect(deps.failRun).not.toHaveBeenCalled();
     });
 
-    it('enabled policy does not activate when coordinator is missing', async () => {
-      const create = vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/feature-test.md' });
+    it('enabled policy fails clearly when coordinator is missing', async () => {
+      const create = vi.fn();
       const createTechSpecDraft = vi.fn();
       const decomposeTasks = vi.fn();
 
@@ -532,9 +532,33 @@ describe('ArtifactCreationHandler', () => {
       const run = makeRun({ intent: 'idea' });
       await handler.handle(run, makeRequest(), 'idea');
 
-      expect(create).toHaveBeenCalledOnce();
+      expect(deps.failRun).toHaveBeenCalledWith(
+        run,
+        TEST_CONVERSATION,
+        expect.objectContaining({ message: expect.stringContaining('authoringApiConvergenceCoordinator') }),
+      );
+      expect(create).not.toHaveBeenCalled();
       expect(createTechSpecDraft).not.toHaveBeenCalled();
-      expect(deps.failRun).not.toHaveBeenCalled();
+      expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
+    });
+
+    it('enabled policy fails clearly when createTechSpecDraft is missing', async () => {
+      const create = vi.fn();
+      const { handler, deps } = makeHandler({
+        artifactAuthoringAgent: { create },
+        specAuthoringPolicy: { api_convergence: { enabled: true, max_rounds: 2, allow_same_model: false } },
+        authoringApiConvergenceCoordinator: { run: vi.fn() },
+      });
+
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(deps.failRun).toHaveBeenCalledWith(
+        run,
+        TEST_CONVERSATION,
+        expect.objectContaining({ message: expect.stringContaining('createTechSpecDraft') }),
+      );
+      expect(create).not.toHaveBeenCalled();
     });
 
     it('enabled path destroys workspace and fails run when tech spec draft throws', async () => {

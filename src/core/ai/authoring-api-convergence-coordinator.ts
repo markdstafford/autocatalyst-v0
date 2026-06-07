@@ -124,7 +124,7 @@ export class AuthoringApiConvergenceCoordinator {
     // 4. Convergence loop
     for (let round = 1; round <= maxRounds; round++) {
       // a. Emit progress
-      const roundAction = round === 1 ? 'proposer drafting API artifact' : 'critic reviewing revised API artifact';
+      const roundAction = (round === 1 || currentArtifact === null) ? 'proposer drafting API artifact' : 'critic reviewing revised API artifact';
       try {
         await onProgress?.(`API convergence round ${round} started — ${roundAction}`);
       } catch { /* ignore */ }
@@ -138,8 +138,8 @@ export class AuthoringApiConvergenceCoordinator {
       // c. Read current spec
       const specMarkdown = await this.readFileFn(artifact_path, 'utf-8');
 
-      // d+e. Run proposer on round 1 to get initial artifact
-      if (round === 1) {
+      // d+e. Run proposer on round 1, or when previous parse produced no valid artifact
+      if (round === 1 || currentArtifact === null) {
         try {
           await mkdir(dirname(artifactResultPath), { recursive: true });
         } catch { /* ignore */ }
@@ -202,12 +202,6 @@ export class AuthoringApiConvergenceCoordinator {
           );
           continue;
         }
-      }
-
-      // At this point currentArtifact must be non-null (either from round 1 propose or from revision)
-      if (!currentArtifact) {
-        // This shouldn't happen after round 1 succeeds, but be safe
-        continue;
       }
 
       // g. Run critic
