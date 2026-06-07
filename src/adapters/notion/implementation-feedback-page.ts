@@ -9,7 +9,7 @@ import type {
   ImplementationReviewStatus,
   PublishedImplementationReview,
 } from '../../types/impl-feedback-page.js';
-import type { ImplementationReviewExchange } from '../../types/ai.js';
+import type { GateReviewExchange, ImplementationReviewExchange } from '../../types/ai.js';
 export type {
   FeedbackItem,
   ImplementationReviewInput,
@@ -65,6 +65,60 @@ function buildAiReviewBlocks(exchanges: ImplementationReviewExchange[]): unknown
     }
   }
   return blocks;
+}
+
+function gateTitle(gate: string): string {
+  return gate === 'initial' ? 'Initial review' : gate === 'final' ? 'Final review' : `${gate} review`;
+}
+
+function renderGateReviewMarkdown(exchanges: GateReviewExchange[]): string {
+  const lines: string[] = [];
+  const gates = [...new Set(exchanges.map(exchange => exchange.gate))];
+  for (const gate of gates) {
+    const gateExchanges = exchanges.filter(exchange => exchange.gate === gate).sort((a, b) => a.round - b.round);
+    const latest = gateExchanges[gateExchanges.length - 1];
+    const converged = latest?.converged === true;
+    lines.push(`### ${gateTitle(gate)}`);
+    lines.push('');
+    lines.push(converged ? 'Convergence: converged' : `Convergence: failed (\`${latest?.non_convergence_reason ?? 'max_rounds'}\`)`);
+    lines.push(`Rounds: ${gateExchanges.length}`);
+    lines.push(`Proposer model: \`${latest?.proposer_profile.profile ?? 'unknown'}\``);
+    lines.push(`Critic model: \`${latest?.critic_profile.profile ?? 'unknown'}\``);
+    lines.push('');
+
+    if (!converged) {
+      lines.push('#### Open findings');
+      lines.push('');
+      const blockingFindings = latest.findings.filter(finding => finding.severity === 'blocker' || finding.severity === 'warning');
+      for (const finding of blockingFindings) {
+        const response = latest.responses.find(item => item.id === finding.id);
+        lines.push(`- [ ] [${finding.id}] ${finding.finding}`);
+        if (response) lines.push(`  Last proposer response: ${response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input'} — ${response.response}`);
+      }
+      lines.push('');
+      continue;
+    }
+
+    for (const exchange of gateExchanges) {
+      const blockingFindings = exchange.findings.filter(finding => finding.severity === 'blocker' || finding.severity === 'warning');
+      const infoFindings = exchange.findings.filter(finding => finding.severity === 'info');
+      lines.push(`#### Round ${exchange.round} — ${exchange.converged ? 'converged' : 'findings'}`);
+      lines.push('');
+      if (blockingFindings.length === 0 && infoFindings.length === 0) {
+        lines.push('- No blocker or warning findings.');
+      }
+      for (const finding of blockingFindings) {
+        const response = exchange.responses.find(item => item.id === finding.id);
+        lines.push(`- [x] [${finding.id}] ${finding.finding}`);
+        if (response) lines.push(`  ${response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input'} — ${response.response}`);
+      }
+      for (const finding of infoFindings) {
+        lines.push(`- Note [${finding.id}] ${finding.finding}`);
+      }
+      lines.push('');
+    }
+  }
+  return lines.join('\n');
 }
 
 interface NotionImplementationFeedbackPageOptions {
@@ -194,7 +248,18 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
           type: 'heading_2',
           heading_2: { rich_text: [{ text: { content: 'Human review' } }] },
         } as never,
-        ...(input.review_exchanges?.length
+        ...(input.gate_exchanges?.length
+          ? [
+              {
+                type: 'heading_2',
+                heading_2: { rich_text: [{ text: { content: 'AI review' } }] },
+              } as never,
+              {
+                type: 'paragraph',
+                paragraph: { rich_text: [{ text: { content: renderGateReviewMarkdown(input.gate_exchanges) } }] },
+              } as never,
+            ]
+          : input.review_exchanges?.length
           ? [
               {
                 type: 'heading_2',
@@ -286,6 +351,7 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
         resolution_comment: string;
       }>;
       review_exchanges?: ImplementationReviewExchange[];
+      gate_exchanges?: GateReviewExchange[];
     },
   ): Promise<void> {
     let markdown = await this.client.pages.getMarkdown(page_id);
@@ -406,7 +472,19 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
     }
 
     // --- Replace or append AI review section ---
-    if (options.review_exchanges !== undefined) {
+    if (options.gate_exchanges !== undefined) {
+      const aiReviewContent = renderGateReviewMarkdown(options.gate_exchanges);
+      const aiReviewHeading = '\n## AI review\n';
+      const aiReviewPattern = /\n## AI review\n[\s\S]*$/;
+      if (aiReviewPattern.test(markdown)) {
+        markdown = markdown.replace(aiReviewPattern, `${aiReviewHeading}\n${aiReviewContent}`);
+      } else {
+        if (!markdown.includes('\n## Human review\n') && !markdown.includes('\n## Feedback\n')) {
+          this.logger.warn({ event: 'implementation.missing_human_review', page_id }, 'Page missing Human review section; appending AI review at end');
+        }
+        markdown = markdown.trimEnd() + `\n\n## AI review\n\n${aiReviewContent}`;
+      }
+    } else if (options.review_exchanges !== undefined) {
       const aiReviewContent = renderAiReviewMarkdown(options.review_exchanges);
       const aiReviewHeading = '\n## AI review\n';
       const aiReviewPattern = /\n## AI review\n[\s\S]*$/;

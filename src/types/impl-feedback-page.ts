@@ -1,4 +1,4 @@
-import type { ImplementationReviewExchange } from './ai.js';
+import type { GateReviewExchange, ImplementationReviewExchange } from './ai.js';
 
 export type ImplementationReviewStatus =
   | 'not_started'
@@ -33,6 +33,7 @@ export interface ImplementationReviewInput {
   };
   testing_steps?: string[];
   review_exchanges?: ImplementationReviewExchange[];
+  gate_exchanges?: GateReviewExchange[];
 }
 
 export interface ImplementationReviewPublisher {
@@ -54,6 +55,7 @@ export interface ImplementationReviewPublisher {
         resolution_comment: string;
       }>;
       review_exchanges?: ImplementationReviewExchange[];
+      gate_exchanges?: GateReviewExchange[];
     },
   ): Promise<void>;
 
