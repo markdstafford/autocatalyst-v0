@@ -20,6 +20,7 @@ import {
   altitudesForDepth,
   resolveFeedbackDepth,
   resolveImplementationConvergencePolicy,
+  allowedCategoriesForGate,
 } from '../../src/core/ai/layered-convergence-policy.js';
 
 const fixture = (name: string) =>
@@ -705,5 +706,25 @@ describe('implementation_review.convergence layered config', () => {
         },
       },
     })).toThrow('implementation_review.convergence.max_model_sessions_per_run must be a positive integer');
+  });
+});
+
+// ─── allowedCategoriesForGate ─────────────────────────────────────────────────
+
+describe('allowedCategoriesForGate', () => {
+  it('returns [maintainability, docs] for layout gate', () => {
+    expect(allowedCategoriesForGate('layout')).toEqual(['maintainability', 'docs']);
+  });
+
+  it('returns [maintainability, docs, security] for public_api gate', () => {
+    expect(allowedCategoriesForGate('public_api')).toEqual(['maintainability', 'docs', 'security']);
+  });
+
+  it('returns [maintainability, docs, security] for private_api gate', () => {
+    expect(allowedCategoriesForGate('private_api')).toEqual(['maintainability', 'docs', 'security']);
+  });
+
+  it('returns [correctness, test, security, maintainability, docs, pr_readiness] for build gate', () => {
+    expect(allowedCategoriesForGate('build')).toEqual(['correctness', 'test', 'security', 'maintainability', 'docs', 'pr_readiness']);
   });
 });
