@@ -8,6 +8,8 @@ import { OpenAIDirectModelRunner } from '../../src/adapters/openai/direct-model-
 import { AnthropicDirectModelRunner } from '../../src/adapters/anthropic/direct-model-runner.js';
 import { OpenAIAgentSdkAgentRunner } from '../../src/adapters/openai/agent-sdk-agent-runner.js';
 import { ClaudeAgentSdkAgentRunner } from '../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
+import { AuthoringApiConvergenceCoordinator } from '../../src/core/ai/authoring-api-convergence-coordinator.js';
+import { getSpecAuthoringPolicy } from '../../src/core/config.js';
 import type { ResolvedAiConfig } from '../../src/core/config.js';
 import type { RuntimeLogger } from '../../src/adapters/runtime-composition.js';
 import type { DirectModelRunner, DirectModelRunRequest, AgentRunner, AgentRunRequest } from '../../src/types/ai.js';
@@ -386,6 +388,31 @@ describe('buildAgentRunner — requestLogDir threading', () => {
     expect(runner).toBeInstanceOf(OpenAIAgentSdkAgentRunner);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((runner as any).requestLog).toBeUndefined();
+  });
+});
+
+describe('runtime wiring: AuthoringApiConvergenceCoordinator construction', () => {
+  it('AuthoringApiConvergenceCoordinator can be constructed with agentRunner, routingPolicy, policy, and logger', () => {
+    const agentRunner: AgentRunner = {
+      run: vi.fn().mockImplementation(async function* () {
+        yield { type: 'assistant', content: [{ type: 'text', text: 'ok' }] };
+      }),
+    };
+    const routingPolicy = {
+      resolve: vi.fn(),
+    } as unknown as import('../../src/core/ai/routing-policy.js').DefaultAgentRoutingPolicy;
+
+    const workflowConfig = {} as WorkflowConfig;
+    const specAuthoringPolicy = getSpecAuthoringPolicy(workflowConfig);
+
+    const coordinator = new AuthoringApiConvergenceCoordinator({
+      runner: agentRunner,
+      routingPolicy,
+      policy: specAuthoringPolicy.api_convergence,
+      logger: noopLogger,
+    });
+
+    expect(coordinator).toBeInstanceOf(AuthoringApiConvergenceCoordinator);
   });
 });
 

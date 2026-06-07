@@ -23,6 +23,7 @@ import type { ImplementationReviewCoordinator } from './ai/implementation-review
 import type { ResolvedImplementationConvergencePolicy } from './ai/layered-convergence-policy.js';
 import type { BudgetWriter } from './journal/model-session-budget.js';
 import type { SpecReviewCoordinator } from './ai/spec-review-coordinator.js';
+import type { AuthoringApiConvergenceCoordinator } from './ai/authoring-api-convergence-coordinator.js';
 import { ArtifactCreationHandler } from './handlers/artifact-creation-handler.js';
 import { ArtifactApprovalHandler, type ArtifactApprovalResult } from './handlers/artifact-approval-handler.js';
 import { ArtifactFeedbackHandler } from './handlers/artifact-feedback-handler.js';
@@ -107,6 +108,8 @@ export interface DefaultHandlerRegistryDeps {
   workspacePruner?: Pick<WorkspacePruner, 'prune'>;
   autoPruneWorkspace?: boolean;
   journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
+  specAuthoringPolicy?: { api_convergence: { enabled: boolean; max_rounds: number; allow_same_model: boolean } };
+  authoringApiConvergenceCoordinator?: Pick<AuthoringApiConvergenceCoordinator, 'run'>;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
@@ -199,6 +202,8 @@ async function startArtifactCreation(
     branchGuard,
     specReviewCoordinator: deps.specReviewCoordinator,
     journal: deps.journal,
+    specAuthoringPolicy: deps.specAuthoringPolicy,
+    authoringApiConvergenceCoordinator: deps.authoringApiConvergenceCoordinator,
   });
   await handler.handle(run, request, intent);
 }
