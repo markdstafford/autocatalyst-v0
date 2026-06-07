@@ -548,9 +548,9 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     );
   });
 
-  it('calls runLayeredImplementation when convergencePolicy enables a layered depth', async () => {
+  it('calls runInitialReview (not runLayeredImplementation) even when convergencePolicy enables a full depth', async () => {
     const coord = {
-      runInitialReview: vi.fn().mockResolvedValue({ status: 'complete', summary: 'unused', testing_instructions: 'unused' }),
+      runInitialReview: vi.fn().mockResolvedValue({ status: 'complete', summary: 'Initial review done.', testing_instructions: 'npm test' }),
       runLayeredImplementation: vi.fn().mockResolvedValue({
         status: 'complete',
         summary: 'Layered done.',
@@ -562,17 +562,14 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
       convergencePolicy: {
         enabled: true,
         allow_same_model: false,
-        depth: 'layout',
+        depth: 'full',
         feedback_depth: 'build_only',
         max_model_sessions_per_run: 24,
       },
     });
     await handler.handle(makeRun(), makeFeedback());
-    expect(coord.runLayeredImplementation).toHaveBeenCalledWith(
-      expect.objectContaining({ artifact_path: '/ws/request-001/context-human/specs/feature-test.md' }),
-      { altitudes: ['layout', 'build'] },
-    );
-    expect(coord.runInitialReview).not.toHaveBeenCalled();
+    expect(coord.runLayeredImplementation).not.toHaveBeenCalled();
+    expect(coord.runInitialReview).toHaveBeenCalled();
   });
 
   it('calls runInitialReview when convergencePolicy is build_only', async () => {

@@ -10,10 +10,7 @@ import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
-import {
-  altitudesForDepth,
-  type ResolvedImplementationConvergencePolicy,
-} from '../ai/layered-convergence-policy.js';
+import type { ResolvedImplementationConvergencePolicy } from '../ai/layered-convergence-policy.js';
 import { ModelSessionBudget, type BudgetWriter } from '../journal/model-session-budget.js';
 
 export interface ImplementationStartDeps {
@@ -196,14 +193,7 @@ export class ImplementationStartHandler {
         captureFeedback,
         sessionBudget,
       };
-      const policy = this.deps.convergencePolicy;
-      const useLayered =
-        policy?.enabled &&
-        policy.depth !== 'build_only' &&
-        typeof this.deps.reviewCoordinator.runLayeredImplementation === 'function';
-      reviewedResult = useLayered
-        ? await this.deps.reviewCoordinator.runLayeredImplementation!(reviewParams, { altitudes: altitudesForDepth(policy!.depth) })
-        : await this.deps.reviewCoordinator.runInitialReview(reviewParams);
+      reviewedResult = await this.deps.reviewCoordinator.runInitialReview(reviewParams);
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');
         try {

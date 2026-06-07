@@ -210,7 +210,10 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     logger,
   });
 
-  const convergencePolicy = resolveImplementationConvergencePolicy(currentConfig.config);
+  const convergencePolicy = resolveImplementationConvergencePolicy(
+    currentConfig.config,
+    warning => logger.warn(warning, 'Ignoring legacy implementation convergence depth'),
+  );
 
   const specReviewCoordinator = new SpecReviewCoordinator({
     runner: agentRunner,
