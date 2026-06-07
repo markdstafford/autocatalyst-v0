@@ -90,10 +90,17 @@ function renderGateReviewMarkdown(exchanges: GateReviewExchange[]): string {
       lines.push('#### Open findings');
       lines.push('');
       const blockingFindings = latest.findings.filter(finding => finding.severity === 'blocker' || finding.severity === 'warning');
+      // Build a map of the last known proposer response per finding ID from prior addressed rounds
+      const lastResponseById = new Map<string, (typeof latest.responses)[number]>();
+      for (const ex of gateExchanges) {
+        for (const r of ex.responses) {
+          lastResponseById.set(r.id, r);
+        }
+      }
       for (const finding of blockingFindings) {
-        const response = latest.responses.find(item => item.id === finding.id);
-        lines.push(`- [ ] [${finding.id}] ${finding.finding}`);
-        if (response) lines.push(`  Last proposer response: ${response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input'} — ${response.response}`);
+        const response = lastResponseById.get(finding.id);
+        lines.push(`- [ ] [${finding.id}] ${redactSecrets(finding.finding)}`);
+        if (response) lines.push(`  Last proposer response: ${response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input'} — ${redactSecrets(response.response)}`);
       }
       lines.push('');
       continue;
@@ -109,11 +116,11 @@ function renderGateReviewMarkdown(exchanges: GateReviewExchange[]): string {
       }
       for (const finding of blockingFindings) {
         const response = exchange.responses.find(item => item.id === finding.id);
-        lines.push(`- [x] [${finding.id}] ${finding.finding}`);
-        if (response) lines.push(`  ${response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input'} — ${response.response}`);
+        lines.push(`- [x] [${finding.id}] ${redactSecrets(finding.finding)}`);
+        if (response) lines.push(`  ${response.disposition === 'fixed' ? 'Fixed' : response.disposition === 'declined' ? 'Declined' : 'Needs input'} — ${redactSecrets(response.response)}`);
       }
       for (const finding of infoFindings) {
-        lines.push(`- Note [${finding.id}] ${finding.finding}`);
+        lines.push(`- Note [${finding.id}] ${redactSecrets(finding.finding)}`);
       }
       lines.push('');
     }

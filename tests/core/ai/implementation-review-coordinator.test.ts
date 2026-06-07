@@ -575,6 +575,27 @@ describe('ImplementationReviewCoordinator', () => {
       expect(run.review_exchanges).toHaveLength(0); // no legacy exchanges in convergence mode
     });
 
+    it('captureSession for critic includes role: critic, round, and gate', async () => {
+      const deps = makeConvergenceDeps([
+        { status: 'findings', summary: 'Round 1.', findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }] },
+        { status: 'no_findings', summary: 'Round 2 clean.', findings: [] },
+      ], {
+        implementer: makeImplementer(makeCompleteResult({ review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }] })),
+      });
+      const captureSession = vi.fn();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+
+      await coordinator.runInitialReview({ run: makeRun(), artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, captureSession });
+
+      // Both critic sessions (round 1 and round 2) should have role, round, and gate
+      const criticCalls = (captureSession.mock.calls as Array<[Record<string, unknown>]>)
+        .map(c => c[0])
+        .filter(r => r['role'] === 'critic');
+      expect(criticCalls).toHaveLength(2);
+      expect(criticCalls[0]).toMatchObject({ role: 'critic', round: 1, gate: 'initial' });
+      expect(criticCalls[1]).toMatchObject({ role: 'critic', round: 2, gate: 'initial' });
+    });
+
     it('passes the proposer role route into the actual implementer review-response call', async () => {
       const deps = makeConvergenceDeps([
         { status: 'findings', summary: 'Round 1.', findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }] },

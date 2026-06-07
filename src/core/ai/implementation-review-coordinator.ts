@@ -443,9 +443,9 @@ export class ImplementationReviewCoordinator {
 
         const reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
         reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
-        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'ok', drainSummary);
+        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'ok', drainSummary, { role: 'critic', round, gate: phase });
       } catch (err) {
-        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'failed', drainSummary);
+        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'failed', drainSummary, { role: 'critic', round, gate: phase });
         this.deps.logger.error(
           { event: 'implementation.review.round_failed', phase, gate: phase, round, run_id: run.id, error: String(err) },
           'Convergence review round failed',
@@ -681,6 +681,7 @@ export class ImplementationReviewCoordinator {
     ts_start: string,
     outcome: 'ok' | 'failed',
     drainSummary: AgentDrainSummary | undefined,
+    convergenceMeta?: { role: 'critic' | 'proposer'; round: number; gate: 'initial' | 'final' | string },
   ): void {
     if (!captureSession) return;
     const runner = profile.provider === 'openai_agent_sdk' ? 'openai_agent' : 'anthropic_agent';
@@ -697,6 +698,7 @@ export class ImplementationReviewCoordinator {
       tool_results: drainSummary?.tool_result_count ?? null,
       outcome,
       runner,
+      ...(convergenceMeta ?? {}),
     });
   }
 
