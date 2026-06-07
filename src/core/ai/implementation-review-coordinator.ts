@@ -35,6 +35,10 @@ import { agentProfileSummary } from './routing-policy.js';
 import { allowedCategoriesForGate, gateLabel, type LayeredConvergenceGate } from './layered-convergence-policy.js';
 import { filterLayeredFindings } from './layered-finding-filter.js';
 import { type ModelSessionBudget } from '../journal/model-session-budget.js';
+import { buildGateContext } from './gate-context.js';
+import { createGitSnapshotCheckpoint } from '../git-checkpoints.js';
+import { validateAltitudeContract } from './altitude-contract-validator.js';
+import { compareBuildToAcceptedContracts, type AcceptedAltitudeCheckpoint } from './build-contract-preservation.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
@@ -57,6 +61,14 @@ export interface ImplementationReviewCoordinatorDeps {
   branchGuard?: BranchGuard;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'debug' | 'error'>;
   readFile?: ReadFileFn;
+  /** Injectable for testing: replaces buildGateContext from gate-context.ts */
+  buildGateContext?: typeof buildGateContext;
+  /** Injectable for testing: replaces createGitSnapshotCheckpoint from git-checkpoints.ts */
+  createGitSnapshotCheckpoint?: typeof createGitSnapshotCheckpoint;
+  /** Injectable for testing: replaces validateAltitudeContract from altitude-contract-validator.ts */
+  validateAltitudeContract?: typeof validateAltitudeContract;
+  /** Injectable for testing: replaces compareBuildToAcceptedContracts from build-contract-preservation.ts */
+  compareBuildToAcceptedContracts?: typeof compareBuildToAcceptedContracts;
 }
 
 export interface ReviewRunParams {
@@ -382,6 +394,21 @@ export class ImplementationReviewCoordinator {
       );
     }
 
+    // Capture the pre-implementation base ref so each altitude's cumulative diff
+    // is correctly scoped from the same starting point.
+    let baseRef: string;
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const exec = promisify(execFile);
+      const { stdout } = await exec('git', ['rev-parse', 'HEAD'], { cwd: params.working_directory });
+      baseRef = stdout.trim();
+    } catch {
+      baseRef = 'HEAD';
+    }
+
+    const acceptedCheckpoints: AcceptedAltitudeCheckpoint[] = [];
+
     let currentResult = params.implementation_result;
     for (const altitude of altitudes) {
       const result = await this.runConvergenceLoop(
@@ -390,11 +417,46 @@ export class ImplementationReviewCoordinator {
         'implementation.review.initial',
         { ...params, implementation_result: currentResult },
         currentResult,
+        { base_ref: baseRef, acceptedCheckpoints: altitude === 'build' ? [...acceptedCheckpoints] : [] },
       );
       if (result.status !== 'complete') {
         return result;
       }
       currentResult = result;
+
+      // After each non-build altitude converges, create a local checkpoint.
+      // The checkpoint ref becomes the base_ref for the next altitude's cumulative diff.
+      if (altitude !== 'build') {
+        this.deps.logger.info(
+          { event: 'implementation.layer.checkpoint_started', run_id: params.run.id, gate: altitude, strategy: 'internal_ref' },
+          'Creating altitude checkpoint',
+        );
+        try {
+          const checkpoint = await (this.deps.createGitSnapshotCheckpoint ?? createGitSnapshotCheckpoint)({
+            workingDirectory: params.working_directory,
+            runId: params.run.id,
+            gate: altitude,
+          });
+          this.deps.logger.info(
+            { event: 'implementation.layer.checkpoint_completed', run_id: params.run.id, gate: altitude, checkpoint_ref: checkpoint.ref },
+            'Altitude checkpoint created',
+          );
+          // Progress: emit only after checkpoint succeeds
+          try {
+            await params.onProgress?.(`${gateLabel(altitude as LayeredConvergenceGate)} converged — checkpointing layer`);
+          } catch (progressErr) {
+            this.deps.logger.warn({ event: 'progress_failed', run_id: params.run.id, gate: altitude, error: String(progressErr) }, 'Progress message failed to send');
+          }
+          baseRef = checkpoint.ref;
+          acceptedCheckpoints.push({ gate: altitude as 'layout' | 'public_api' | 'private_api', ref: checkpoint.ref });
+        } catch (err) {
+          this.deps.logger.error(
+            { event: 'implementation.layer.checkpoint_failed', run_id: params.run.id, gate: altitude, error: String(err) },
+            'Checkpoint creation failed — failing run before next altitude',
+          );
+          return { status: 'failed', error: `Checkpoint creation failed for ${altitude}: ${String(err)}` };
+        }
+      }
     }
     return currentResult;
   }
@@ -405,6 +467,7 @@ export class ImplementationReviewCoordinator {
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
     { run, artifact_path, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback, sessionBudget }: ReviewRunParams,
     initialResult: ImplementationResult,
+    loopOpts?: { base_ref?: string; acceptedCheckpoints?: AcceptedAltitudeCheckpoint[] },
   ): Promise<ImplementationResult> {
     const implementation_result = initialResult;
     // Resolve critic profile — fall back to initial when final is absent
@@ -483,15 +546,110 @@ export class ImplementationReviewCoordinator {
         'Convergence review round started',
       );
 
-      // Re-derive git diff and changed files fresh inside the loop
-      const diffContext = await this.getGitDiff(working_directory);
-      const changedFiles = await this.getChangedFiles(working_directory);
+      // Re-derive git diff and changed files fresh inside the loop.
+      // Named gates (layered altitudes) use gate-context cumulative diff from the
+      // altitude base ref so each altitude sees only its own cumulative changes.
+      // Legacy 'initial'/'final' gates keep the existing getGitDiff path.
+      const isEarlyLayeredGate = gate === 'layout' || gate === 'public_api' || gate === 'private_api';
+      const isNamedLayeredGate = isEarlyLayeredGate || gate === 'build';
+      let diffContext: string;
+      let changedFiles: string[];
+      if (isNamedLayeredGate && loopOpts?.base_ref) {
+        const gateCtx = await (this.deps.buildGateContext ?? buildGateContext)({ gate: String(gate), base_ref: loopOpts.base_ref, working_directory });
+        diffContext = gateCtx.diff;
+        changedFiles = gateCtx.changed_files;
+        this.deps.logger.info(
+          { event: 'implementation.review.context_built', run_id: run.id, gate, round, context_kind: 'cumulative', changed_file_count: changedFiles.length, diff_byte_count: gateCtx.diff_byte_count },
+          'Gate context built from cumulative diff',
+        );
+      } else {
+        diffContext = await this.getGitDiff(working_directory);
+        changedFiles = await this.getChangedFiles(working_directory);
+      }
+
+      // For early layered altitudes, mechanically validate that the proposer has not
+      // written lower-altitude work before running the critic.
+      if (isEarlyLayeredGate && loopOpts?.base_ref) {
+        const contractResult = await (this.deps.validateAltitudeContract ?? validateAltitudeContract)({
+          gate: gate as 'layout' | 'public_api' | 'private_api',
+          diff: diffContext,
+          changedFiles,
+          workingDirectory: working_directory,
+        });
+        if (contractResult.unsupported_files.length > 0) {
+          this.deps.logger.info(
+            { event: 'implementation.layer.contract_validation_unsupported', run_id: run.id, gate, round, unsupported_files: contractResult.unsupported_files },
+            'Altitude contract: unsupported file types skipped (reviewed by prompts/critics)',
+          );
+        }
+        if (!contractResult.valid) {
+          this.deps.logger.info(
+            { event: 'implementation.layer.contract_validation_failed', run_id: run.id, gate, round, violation_count: contractResult.violations.length },
+            'Altitude contract validation failed — injecting synthetic findings for proposer revision',
+          );
+          const contractFindings: ImplementationReviewFinding[] = contractResult.violations.map(v => ({
+            id: v.id,
+            severity: 'blocker' as const,
+            category: 'maintainability' as const,
+            finding: v.message,
+            scope: 'current_altitude' as const,
+            reason_code: v.reason_code,
+          } as ImplementationReviewFinding));
+
+          if (round === maxRounds) {
+            this.appendGateExchange(run, {
+              id: randomUUID(), gate, round, created_at: new Date().toISOString(),
+              proposer_profile: proposerSummary, critic_profile: criticSummary,
+              review_status: 'non_converged', review_summary: 'Altitude contract violations persist after max rounds',
+              findings: contractFindings, responses: [], converged: false,
+              non_convergence_reason: 'max_rounds', requires_human_retest: false,
+            }, captureFeedback);
+            return { status: 'failed', error: `Altitude contract violations at ${String(gate)} gate persisted after ${maxRounds} rounds: ${contractResult.violations.map(v => v.message).join('; ')}` };
+          }
+
+          // Reserve budget for proposer revision
+          let contractRevisionSessionId: string | undefined;
+          if (sessionBudget) {
+            try {
+              const r = await sessionBudget.reserve({ gate: String(gate), role: 'proposer', round, passKind: 'initial' });
+              contractRevisionSessionId = r.session_id;
+            } catch (err) {
+              this.deps.logger.warn({ event: 'implementation.review.budget_exhausted', run_id: run.id, gate, role: 'proposer', round, error: String(err) }, 'Budget exhausted before contract violation revision');
+              return { status: 'failed', error: String(err) };
+            }
+          }
+
+          const contractRevisePrompt = buildLayeredRevisePrompt({ gate, artifactPath: artifact_path, workingDirectory: working_directory, findings: contractFindings.map(f => ({ id: f.id, severity: f.severity, category: f.category, finding: f.finding })) });
+          let contractReviseResult: ImplementationResult;
+          try {
+            contractReviseResult = await this.deps.implementer.implement(artifact_path, working_directory, contractRevisePrompt, onProgress ?? ((_msg: string) => Promise.resolve()), { run_id: run.id, request_id: run.request_id, phase: `implementation_review_${phase}_proposer`, route: { task: 'implementation.run', role: 'proposer' }, role: 'proposer', round, gate, captureSession, onAgentRequest });
+          } catch (err) {
+            if (sessionBudget && contractRevisionSessionId) await sessionBudget.complete(contractRevisionSessionId, 'failed').catch(() => {});
+            return { status: 'failed', error: `Proposer revision for altitude contract violation failed: ${String(err)}` };
+          }
+          if (sessionBudget && contractRevisionSessionId) await sessionBudget.complete(contractRevisionSessionId, 'ok').catch(() => {});
+
+          if (contractReviseResult.status !== 'complete') return contractReviseResult;
+
+          this.appendGateExchange(run, {
+            id: randomUUID(), gate, round, created_at: new Date().toISOString(),
+            proposer_profile: proposerSummary, critic_profile: criticSummary,
+            review_status: 'addressed', review_summary: 'Altitude contract violations — proposer asked to revise',
+            findings: contractFindings, responses: contractReviseResult.review_responses ?? [], converged: false,
+            requires_human_retest: false,
+          }, captureFeedback);
+
+          currentResult = contractReviseResult;
+          previousSignatures.push(new Set(contractFindings.map(f => f.id)));
+          previousBlockingCounts.push(contractFindings.length);
+          continue; // Skip critic this round; re-validate next round
+        }
+      }
 
       // Build critic prompt with convergence context.
       // For early layered altitudes, use the altitude-aware critique prompt with
       // allowed-category guidance; build/initial/final keep the existing prompts.
       const convergenceContext = { gate, round };
-      const isEarlyLayeredGate = gate === 'layout' || gate === 'public_api' || gate === 'private_api';
       const prompt = isEarlyLayeredGate
         ? buildLayeredCritiquePrompt({
             gate,
@@ -618,6 +776,76 @@ export class ImplementationReviewCoordinator {
 
       // Check for convergence
       if (reviewResult.status === 'no_findings' || blockingFindings.length === 0) {
+        // For the build altitude, verify that converged upper-altitude contracts are
+        // preserved before reporting convergence. Drift is treated as a synthetic blocker.
+        if (gate === 'build' && loopOpts?.acceptedCheckpoints && loopOpts.acceptedCheckpoints.length > 0) {
+          const driftResult = await (this.deps.compareBuildToAcceptedContracts ?? compareBuildToAcceptedContracts)({
+            workingDirectory: working_directory,
+            acceptedCheckpoints: loopOpts.acceptedCheckpoints,
+          });
+          if (!driftResult.valid) {
+            this.deps.logger.info(
+              { event: 'implementation.build.contract_drift_detected', run_id: run.id, gate, round, drift_count: driftResult.drift.length },
+              'Build contract drift detected against accepted upper-altitude checkpoints',
+            );
+            const driftFindings: ImplementationReviewFinding[] = driftResult.drift.map((d, idx) => ({
+              id: `BUILD-CONTRACT-DRIFT-${idx + 1}`,
+              severity: 'blocker' as const,
+              category: 'maintainability' as const,
+              finding: d.message,
+              ...(d.symbol ? { suggested_action: `Restore the reviewed ${d.kind} '${d.symbol}' or rerun the affected upper altitude.` } : {}),
+            } as ImplementationReviewFinding));
+
+            if (round === maxRounds) {
+              this.appendGateExchange(run, {
+                id: randomUUID(), gate, round, created_at: new Date().toISOString(),
+                proposer_profile: proposerSummary, critic_profile: criticSummary,
+                review_status: 'non_converged', review_summary: 'Build contract drift persists after max rounds',
+                findings: [...effectiveFindings, ...driftFindings], responses: [], converged: false,
+                non_convergence_reason: 'max_rounds', requires_human_retest: false,
+              }, captureFeedback);
+              return { status: 'failed', error: `Build gate: contract drift detected and no revision budget remaining. Drift: ${driftResult.drift.map(d => d.message).join('; ')}` };
+            }
+
+            // Reserve proposer budget for drift revision
+            let driftRevisionSessionId: string | undefined;
+            if (sessionBudget) {
+              try {
+                const r = await sessionBudget.reserve({ gate: String(gate), role: 'proposer', round, passKind: 'initial' });
+                driftRevisionSessionId = r.session_id;
+              } catch (err) {
+                this.deps.logger.warn({ event: 'implementation.review.budget_exhausted', run_id: run.id, gate, role: 'proposer', round, error: String(err) }, 'Budget exhausted before contract drift revision');
+                return { status: 'failed', error: String(err) };
+              }
+            }
+
+            const driftRevisePrompt = buildImplementerResponsePrompt(artifact_path, working_directory, currentResult, driftFindings, { gate, round });
+            let driftReviseResult: ImplementationResult;
+            try {
+              driftReviseResult = await this.deps.implementer.implement(artifact_path, working_directory, driftRevisePrompt, onProgress ?? ((_msg: string) => Promise.resolve()), { run_id: run.id, request_id: run.request_id, phase: `implementation_review_${phase}_proposer`, route: { task: 'implementation.run', role: 'proposer' }, role: 'proposer', round, gate, captureSession, onAgentRequest });
+            } catch (err) {
+              if (sessionBudget && driftRevisionSessionId) await sessionBudget.complete(driftRevisionSessionId, 'failed').catch(() => {});
+              return { status: 'failed', error: `Proposer revision for build contract drift failed: ${String(err)}` };
+            }
+            if (sessionBudget && driftRevisionSessionId) await sessionBudget.complete(driftRevisionSessionId, 'ok').catch(() => {});
+
+            if (driftReviseResult.status !== 'complete') return driftReviseResult;
+
+            this.appendGateExchange(run, {
+              id: randomUUID(), gate, round, created_at: new Date().toISOString(),
+              proposer_profile: proposerSummary, critic_profile: criticSummary,
+              review_status: 'addressed', review_summary: 'Build contract drift — proposer asked to revise',
+              findings: [...effectiveFindings, ...driftFindings], responses: driftReviseResult.review_responses ?? [], converged: false,
+              requires_human_retest: false,
+            }, captureFeedback);
+
+            currentResult = driftReviseResult;
+            previousSignatures.push(new Set(driftFindings.map(f => f.id)));
+            previousBlockingCounts.push(driftFindings.length);
+            continue; // Loop back to re-run critic and re-check drift
+          }
+        }
+
         this.appendGateExchange(run, {
           id: randomUUID(),
           gate,
@@ -649,7 +877,7 @@ export class ImplementationReviewCoordinator {
         const convergedMsg = gate === 'build'
           ? `Build converged after ${round} round${round === 1 ? '' : 's'} — creating testing guide`
           : isNamedGate
-            ? `${altLabel} converged after ${round} round${round === 1 ? '' : 's'} — checkpointing layer`
+            ? `${altLabel} converged after ${round} round${round === 1 ? '' : 's'}`
             : `${altLabel} converged after ${round} round${round === 1 ? '' : 's'}`;
         await this.sendProgress(onProgress, run, phase, round, gate, convergedMsg);
 
