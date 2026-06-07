@@ -394,17 +394,20 @@ export class ImplementationReviewCoordinator {
       );
     }
 
-    // Capture the pre-implementation base ref so each altitude's cumulative diff
-    // is correctly scoped from the same starting point.
-    let baseRef: string;
+    // Capture the pre-implementation pass base ref once. This ref is fixed for the
+    // entire pass and is passed to buildGateContext for every altitude so that each
+    // altitude sees a cumulative diff from the same original base through the current
+    // working tree. Checkpoint refs are tracked separately for build contract preservation
+    // and must never replace this pass base ref.
+    let passBaseRef: string;
     try {
       const { execFile } = await import('node:child_process');
       const { promisify } = await import('node:util');
       const exec = promisify(execFile);
       const { stdout } = await exec('git', ['rev-parse', 'HEAD'], { cwd: params.working_directory });
-      baseRef = stdout.trim();
+      passBaseRef = stdout.trim();
     } catch {
-      baseRef = 'HEAD';
+      passBaseRef = 'HEAD';
     }
 
     const acceptedCheckpoints: AcceptedAltitudeCheckpoint[] = [];
@@ -417,16 +420,31 @@ export class ImplementationReviewCoordinator {
         'implementation.review.initial',
         { ...params, implementation_result: currentResult },
         currentResult,
-        { base_ref: baseRef, acceptedCheckpoints: altitude === 'build' ? [...acceptedCheckpoints] : [] },
+        { base_ref: passBaseRef, acceptedCheckpoints: altitude === 'build' ? [...acceptedCheckpoints] : [] },
       );
       if (result.status !== 'complete') {
         return result;
       }
       currentResult = result;
 
-      // After each non-build altitude converges, create a local checkpoint.
-      // The checkpoint ref becomes the base_ref for the next altitude's cumulative diff.
+      // After each non-build altitude converges, run branch guard then create a checkpoint.
+      // Checkpoint refs are stored for build contract preservation; passBaseRef is never
+      // updated — all altitudes always diff cumulatively from the original pass base.
       if (altitude !== 'build') {
+        // Branch guard must run after convergence and before checkpoint creation so that
+        // any drift caused by the last proposer revision is caught before snapshotting.
+        if (this.deps.branchGuard) {
+          try {
+            await this.deps.branchGuard.check(params.working_directory, params.run.branch);
+          } catch (err) {
+            this.deps.logger.error(
+              { event: 'implementation.layer.branch_guard_failed', run_id: params.run.id, gate: altitude, error: String(err) },
+              'Branch guard rejected before checkpoint — failing run',
+            );
+            return { status: 'failed', error: `Branch guard failed before ${altitude} checkpoint: ${String(err)}` };
+          }
+        }
+
         this.deps.logger.info(
           { event: 'implementation.layer.checkpoint_started', run_id: params.run.id, gate: altitude, strategy: 'internal_ref' },
           'Creating altitude checkpoint',
@@ -447,7 +465,6 @@ export class ImplementationReviewCoordinator {
           } catch (progressErr) {
             this.deps.logger.warn({ event: 'progress_failed', run_id: params.run.id, gate: altitude, error: String(progressErr) }, 'Progress message failed to send');
           }
-          baseRef = checkpoint.ref;
           acceptedCheckpoints.push({ gate: altitude as 'layout' | 'public_api' | 'private_api', ref: checkpoint.ref });
         } catch (err) {
           this.deps.logger.error(

@@ -1300,9 +1300,12 @@ describe('runLayeredImplementation — wiring integration', () => {
     expect(calls).toContain('build');
   });
 
-  it('buildGateContext receives distinct base_refs per altitude after checkpointing', async () => {
-    // After layout converges and checkpoints, public_api and build must receive
-    // the checkpoint ref as base_ref, not the initial HEAD.
+  it('buildGateContext receives the same cumulative pass base_ref for all altitudes', async () => {
+    // Spec §Diff context strategy: base_ref is the pre-implementation pass base captured
+    // once before any altitude writes files. All altitudes diff cumulatively from this
+    // same base so the critic at each altitude sees the full accumulated diff.
+    // Checkpoint refs are stored only for build contract preservation, not passed to
+    // buildGateContext — they must NOT become the base_ref for later altitudes.
     const checkpointFn = vi.fn()
       .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/autocatalyst/runs/run-001/layout/1', commit: 'layout-sha', gate: 'layout' })
       .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/autocatalyst/runs/run-001/public_api/2', commit: 'public-sha', gate: 'public_api' });
@@ -1326,12 +1329,13 @@ describe('runLayeredImplementation — wiring integration', () => {
     expect(publicApiCall).toBeDefined();
     expect(buildCall).toBeDefined();
 
-    // layout uses the initial base (not a checkpoint ref)
+    // All three altitudes receive the same pass base ref (not a checkpoint ref)
     expect(layoutCall![0].base_ref).not.toContain('refs/autocatalyst');
-    // public_api uses the layout checkpoint ref
-    expect(publicApiCall![0].base_ref).toBe('refs/autocatalyst/runs/run-001/layout/1');
-    // build uses the public_api checkpoint ref
-    expect(buildCall![0].base_ref).toBe('refs/autocatalyst/runs/run-001/public_api/2');
+    expect(publicApiCall![0].base_ref).not.toContain('refs/autocatalyst');
+    expect(buildCall![0].base_ref).not.toContain('refs/autocatalyst');
+    // public_api and build must match layout's base_ref (same pass base for all)
+    expect(publicApiCall![0].base_ref).toBe(layoutCall![0].base_ref);
+    expect(buildCall![0].base_ref).toBe(layoutCall![0].base_ref);
   });
 
   it('createGitSnapshotCheckpoint is called after each converged non-build altitude', async () => {
@@ -1352,6 +1356,40 @@ describe('runLayeredImplementation — wiring integration', () => {
     expect(gates).toContain('layout');
     expect(gates).toContain('public_api');
     expect(gates).not.toContain('build');
+  });
+
+  it('branch guard failure before checkpoint blocks checkpoint creation and the next altitude', async () => {
+    // Spec §Checkpoints and branch guard: "The branch guard runs after each proposer pass
+    // and before each checkpoint." If the guard rejects before checkpointing an altitude,
+    // the run fails before the checkpoint is created and before the next altitude starts.
+    // Sequence: layout converges (no_findings, no proposer call) → guard called before
+    // layout checkpoint → passes → checkpoint created → public_api converges → guard
+    // called before public_api checkpoint → rejects → run fails, build never starts.
+    const checkpointFn = makeCheckpointFn();
+    const branchGuard = {
+      check: vi.fn()
+        .mockResolvedValueOnce(undefined)  // before layout checkpoint — passes
+        .mockRejectedValue(new Error('branch drift detected')), // before public_api checkpoint — fails
+    };
+    const deps = makeDeps(undefined, { createGitSnapshotCheckpoint: checkpointFn, branchGuard });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    expect(result.status).toBe('failed');
+    expect((result as { status: 'failed'; error: string }).error).toMatch(/branch guard failed before public_api checkpoint/i);
+    // Layout checkpoint was created (guard passed), public_api checkpoint was NOT
+    expect(checkpointFn).toHaveBeenCalledTimes(1);
+    const checkpointedGates = checkpointFn.mock.calls.map((c: [{ gate: string }]) => c[0].gate);
+    expect(checkpointedGates).toContain('layout');
+    expect(checkpointedGates).not.toContain('public_api');
+    // layout and public_api critics ran; build was never started
+    expect(deps.runner.run).toHaveBeenCalledTimes(2);
   });
 
   it('run fails if checkpoint creation fails and does not start the next altitude', async () => {
@@ -1481,9 +1519,11 @@ describe('runLayeredImplementation — wiring integration', () => {
     expect(deps.implementer.implement).toHaveBeenCalledTimes(1);
   });
 
-  it('full-depth run produces distinct diff contexts per altitude, not repeated full diff', async () => {
-    // Each altitude's buildGateContext call must receive the correct cumulative base_ref.
-    // layout gets the initial HEAD, subsequent altitudes get checkpoint refs.
+  it('full-depth run passes the same cumulative pass base_ref to all four altitudes', async () => {
+    // Spec §Diff context strategy: the pass base_ref is captured once before the first
+    // altitude and never changes. All altitudes diff cumulatively from that same base.
+    // Checkpoint refs are stored for build contract preservation (compareBuildToAccepted-
+    // Contracts) and must not become the base_ref for any altitude's buildGateContext call.
     const checkpointFn = vi.fn()
       .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/ckpt/layout', commit: 'sha1', gate: 'layout' })
       .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/ckpt/public_api', commit: 'sha2', gate: 'public_api' })
@@ -1504,15 +1544,13 @@ describe('runLayeredImplementation — wiring integration', () => {
 
     const byGate = Object.fromEntries(calls.map(([c]) => [c.gate, c.base_ref]));
 
-    // layout uses initial HEAD (not a checkpoint ref)
-    expect(byGate['layout']).not.toContain('refs/ckpt');
-    // each subsequent altitude gets the prior altitude's checkpoint ref
-    expect(byGate['public_api']).toBe('refs/ckpt/layout');
-    expect(byGate['private_api']).toBe('refs/ckpt/public_api');
-    expect(byGate['build']).toBe('refs/ckpt/private_api');
+    // No altitude should receive a checkpoint ref as its base_ref
+    for (const [gate, baseRef] of Object.entries(byGate)) {
+      expect(baseRef, `${gate} must not use a checkpoint ref as base_ref`).not.toContain('refs/ckpt');
+    }
 
-    // All four base_refs must be distinct
+    // All four altitudes must receive the same cumulative pass base
     const uniqueBaseRefs = new Set(Object.values(byGate));
-    expect(uniqueBaseRefs.size).toBe(4);
+    expect(uniqueBaseRefs.size).toBe(1);
   });
 });
