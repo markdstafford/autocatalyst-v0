@@ -11,7 +11,6 @@ const SECRET_REPLACEMENTS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /\b(password|passwd|pwd)\s*[:=]\s*\S+/gi, replacement: '$1=[REDACTED]' },
 ];
 
-/** Redacts common API keys, bearer tokens, Slack tokens, GitHub tokens, and password-like values. */
 export function redactSecrets(text: string): string {
   let redacted = text;
   for (const { pattern, replacement } of SECRET_REPLACEMENTS) redacted = redacted.replace(pattern, replacement);
