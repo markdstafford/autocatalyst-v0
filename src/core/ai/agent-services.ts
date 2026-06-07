@@ -21,6 +21,7 @@ import type {
   ArtifactCommentResponse,
   ArtifactCreateResult,
   ArtifactRevisionResult,
+  ConvergedApiArtifact,
   ImplementationAgent,
   ImplementationPlanResult,
   ImplementationPlanningAgent,
@@ -399,6 +400,127 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     }
 
     return parsed;
+  }
+
+  async createTechSpecDraft(
+    request: Request,
+    workspace_path: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: AgentServiceTelemetry,
+  ): Promise<ArtifactCreateResult> {
+    const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
+    const artifactDir = join(workspace_path, 'context-human', 'specs');
+    const route: AgentRoute = {
+      task: 'artifact.create' as const,
+      stage: 'new_thread' as const,
+      intent: 'idea',
+      artifact_kind: 'feature_spec',
+    };
+    const prompt = buildArtifactTechSpecDraftPrompt(request, artifactDir, createResultPath);
+
+    this.logger.debug({ event: 'artifact.tech_spec_draft.started', request_id: request.id }, 'Invoking agent for tech spec draft');
+
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
+    const progressWithHeartbeat = onProgress && telemetry?.onAgentRequest
+      ? async (msg: string) => { notifyAgentRequest(telemetry, profile, route, true); return onProgress(msg); }
+      : onProgress;
+
+    const ts_start = new Date().toISOString();
+    let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
+    try {
+      await ensureResultDir(createResultPath);
+      drainSummary = await drainAgentRunner(
+        this.runner.run({ route, profile, working_directory: workspace_path, prompt, telemetry: { request_id: request.id, phase: 'artifact_generation', route_task: route.task, handler: 'AgentRunnerArtifactAuthoringAgent', ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}) } }),
+        progressWithHeartbeat,
+        this.logger,
+        'artifact_generation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
+      );
+    } catch (err) {
+      sessionOutcome = 'failed';
+      this.logger.error({ event: 'artifact.tech_spec_draft.failed', request_id: request.id, error: String(err) }, 'Agent failed during tech spec draft');
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
+      throw new Error(`Tech spec draft failed: ${String(err)}`);
+    }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
+
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: createResultPath,
+      label: 'Tech spec draft',
+      logger: this.logger,
+      phase: 'artifact_generation',
+      route_task: 'artifact.create',
+      request_id: request.id,
+      run_id: telemetry?.run_id,
+      drainSummary,
+    });
+    const result = parseArtifactCreateResult(content, createResultPath);
+    this.logger.info({ event: 'artifact.tech_spec_draft.complete', request_id: request.id, artifact_path: result.artifact_path }, 'Tech spec draft complete');
+    return result;
+  }
+
+  async decomposeTasks(
+    artifact_path: string,
+    workspace_path: string,
+    onProgress?: (message: string) => Promise<void>,
+    telemetry?: AgentServiceTelemetry,
+  ): Promise<ArtifactCreateResult> {
+    const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
+    const route: AgentRoute = {
+      task: 'artifact.create' as const,
+      stage: 'new_thread' as const,
+      intent: 'idea',
+      artifact_kind: 'feature_spec',
+    };
+    const prompt = buildArtifactTaskDecompositionPrompt(artifact_path, createResultPath);
+
+    this.logger.debug({ event: 'artifact.task_decomposition.started' }, 'Invoking agent for task decomposition');
+
+    const profile = this.routingPolicy.resolve(route);
+    notifyAgentRequest(telemetry, profile, route);
+
+    const progressWithHeartbeat = onProgress && telemetry?.onAgentRequest
+      ? async (msg: string) => { notifyAgentRequest(telemetry, profile, route, true); return onProgress(msg); }
+      : onProgress;
+
+    const ts_start = new Date().toISOString();
+    let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
+    try {
+      await ensureResultDir(createResultPath);
+      drainSummary = await drainAgentRunner(
+        this.runner.run({ route, profile, working_directory: workspace_path, prompt, telemetry: { phase: 'artifact_generation', route_task: route.task, handler: 'AgentRunnerArtifactAuthoringAgent', ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) } }),
+        progressWithHeartbeat,
+        this.logger,
+        'artifact_generation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
+      );
+    } catch (err) {
+      sessionOutcome = 'failed';
+      this.logger.error({ event: 'artifact.task_decomposition.failed', error: String(err) }, 'Agent failed during task decomposition');
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
+      throw new Error(`Task decomposition failed: ${String(err)}`);
+    }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
+
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: createResultPath,
+      label: 'Task decomposition',
+      logger: this.logger,
+      phase: 'artifact_generation',
+      route_task: 'artifact.create',
+      request_id: telemetry?.request_id,
+      run_id: telemetry?.run_id,
+      drainSummary,
+    });
+    const result = parseArtifactCreateResult(content, createResultPath);
+    this.logger.info({ event: 'artifact.task_decomposition.complete', artifact_path: result.artifact_path }, 'Task decomposition complete');
+    return result;
   }
 }
 
@@ -1442,6 +1564,204 @@ function buildArtifactRevisePrompt(
     `<<<`,
     currentArtifact,
     `>>>`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildArtifactTechSpecDraftPrompt(
+  request: Request,
+  artifactDir: string,
+  createResultPath: string,
+): string {
+  return [
+    `Use the \`mm:planning\` skill to create a product spec for the following request, but stop after requirements/design/tech spec.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    MM_PLANNING_BRANCH_OVERRIDE,
+    ``,
+    `Create a canonical empty top-level \`## Task list\` placeholder.`,
+    `Do not decompose implementation tasks.`,
+    ``,
+    `Request:`,
+    `<<<`,
+    request.content,
+    `>>>`,
+    ``,
+    `When the tech spec draft is complete:`,
+    `- Write the spec file to: ${artifactDir}`,
+    `  Use "feature-<slug>.md" for new standalone functionality, "enhancement-<slug>.md" for improvements.`,
+    `- Write the result to: ${createResultPath}`,
+    `  Content must be: { "artifact_path": "<absolute path to the spec file you wrote>" }`,
+    ``,
+    `Write the normal result JSON only after the tech-spec-stage draft exists.`,
+    `Do not signal completion until both files have been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildArtifactTaskDecompositionPrompt(
+  artifactPath: string,
+  createResultPath: string,
+): string {
+  return [
+    `Use the \`mm:planning\` skill to run only the task-decomposition stage on the existing spec.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    MM_PLANNING_BRANCH_OVERRIDE,
+    ``,
+    `Preserve the existing requirements, design, tech spec, and \`## Converged API\` sections.`,
+    `Respect the agreed API surface.`,
+    ``,
+    `Existing spec: ${artifactPath}`,
+    ``,
+    `When task decomposition is complete:`,
+    `- Update the spec at: ${artifactPath}`,
+    `- Write the result to: ${createResultPath}`,
+    `  Content must be: { "artifact_path": "${artifactPath}" }`,
+    ``,
+    `Write the normal result JSON only after tasks are added.`,
+    `Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildAuthoringApiProposePrompt(
+  specMarkdown: string,
+  artifactResultPath: string,
+  round: number,
+): string {
+  return [
+    `You are an API proposer. Review the spec below and produce a structured API artifact in JSON.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    `Round: ${round}`,
+    ``,
+    `The JSON artifact must follow this schema:`,
+    `{`,
+    `  "files": [{ "path": "src/...", "purpose": "...", "exports": ["SymbolA"] }],`,
+    `  "public_api": [{`,
+    `    "symbol": "SymbolA",`,
+    `    "signature": "export function SymbolA(...): ...",`,
+    `    "parameters": [{ "name": "x", "type": "T", "description": "..." }],`,
+    `    "returns": "ReturnType",`,
+    `    "errors": ["ErrorX when ..."]`,
+    `  }],`,
+    `  "types": [{ "name": "T", "shape": "interface T { ... }", "description": "..." }],`,
+    `  "notes": "Explanation if files/public_api/types are empty."`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- files, public_api, and types must be arrays. Empty arrays are valid only when the spec truly has no code-facing API changes; explain in notes.`,
+    `- File paths must be repository-relative POSIX paths (no leading /, no ..).`,
+    `- symbol, signature, returns, name, and shape must be non-empty strings.`,
+    `- errors must be an array of strings. Use [] when no error contract is expected.`,
+    ``,
+    `Spec:`,
+    `<<<`,
+    specMarkdown,
+    `>>>`,
+    ``,
+    `Write the artifact to: ${artifactResultPath}`,
+    `Do not signal completion until the artifact file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildAuthoringApiCritiquePrompt(
+  specMarkdown: string,
+  artifact: ConvergedApiArtifact,
+  reviewResultPath: string,
+  round: number,
+): string {
+  return [
+    `You are an adversarial API critic. Review the proposed API artifact against the spec below and return structured findings.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    `Round: ${round}`,
+    ``,
+    `Proposed API artifact:`,
+    `<<<`,
+    JSON.stringify(artifact, null, 2),
+    `>>>`,
+    ``,
+    `Spec:`,
+    `<<<`,
+    specMarkdown,
+    `>>>`,
+    ``,
+    `Write the critique result to: ${reviewResultPath}`,
+    `Content must be:`,
+    `{`,
+    `  "status": "no_findings" | "findings" | "failed",`,
+    `  "summary": "1-2 sentence summary",`,
+    `  "findings": [`,
+    `    {`,
+    `      "id": "API-1",`,
+    `      "severity": "blocker" | "warning" | "info",`,
+    `      "category": "correctness" | "maintainability" | "security" | "docs" | "test" | "pr_readiness",`,
+    `      "finding": "concise description",`,
+    `      "suggested_action": "optional action"`,
+    `    }`,
+    `  ],`,
+    `  "error": "only when status is failed"`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- Use sequential IDs: API-1, API-2, etc.`,
+    `- If no issues found, use status: "no_findings" with empty findings array.`,
+    `- Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildAuthoringApiRevisePrompt(
+  specMarkdown: string,
+  artifact: ConvergedApiArtifact,
+  findings: ImplementationReviewFinding[],
+  artifactResultPath: string,
+  round: number,
+): string {
+  const findingBlocks = findings.map(f => [
+    `[API_FINDING_ID: ${f.id}]`,
+    `Severity: ${f.severity}`,
+    `Category: ${f.category}`,
+    `Finding: ${f.finding}`,
+    ...(f.suggested_action ? [`Suggested action: ${f.suggested_action}`] : []),
+  ].join('\n'));
+
+  return [
+    `You are an API proposer. The critic returned findings on your API artifact. Revise it to address the findings.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    `Round: ${round}`,
+    ``,
+    `Current API artifact:`,
+    `<<<`,
+    JSON.stringify(artifact, null, 2),
+    `>>>`,
+    ``,
+    `Critic findings:`,
+    ``,
+    findingBlocks.join('\n\n'),
+    ``,
+    `Spec:`,
+    `<<<`,
+    specMarkdown,
+    `>>>`,
+    ``,
+    `Write the revised artifact to: ${artifactResultPath}`,
+    `The artifact must follow the same JSON schema as before.`,
+    `Do not signal completion until the artifact file has been written.`,
     ``,
     CHECKPOINT_INSTRUCTIONS,
   ].join('\n');
