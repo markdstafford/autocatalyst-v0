@@ -31,6 +31,7 @@ import type { ImplementationReviewCoordinator } from './ai/implementation-review
 import type { SpecReviewCoordinator } from './ai/spec-review-coordinator.js';
 import { clearAgentRequestContext, isAiActiveStage } from './run-ai-context.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
+import type { RunJournal } from './journal/run-journal.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
@@ -87,6 +88,7 @@ export interface OrchestratorDeps {
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
   autoPruneWorkspace?: boolean;
   workspacePruner?: import('./workspace-pruner.js').WorkspacePruner;
+  journal?: RunJournal;
 }
 
 interface OrchestratorOptions {
@@ -415,6 +417,14 @@ export class OrchestratorImpl implements Orchestrator {
           );
         }
 
+        const stage2ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
+        void this.deps.journal?.captureInboundMessage(
+          run,
+          { content: request.content },
+          intent,
+          stage2ClassificationStatus,
+        ).catch(() => {});
+
         // Post Stage 2 intent-specific acknowledgement (best-effort) — no file_issues ack here
         if (intent !== 'ignore') {
           const intentMessages: Partial<Record<string, string>> = {
@@ -425,7 +435,7 @@ export class OrchestratorImpl implements Orchestrator {
           };
           const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
           try {
-            await this.postMessage(request.conversation, intentMessage);
+            await this.postMessage(request.conversation, intentMessage, run);
           } catch (err) {
             this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post Stage 2 intent acknowledgement');
           }
@@ -458,6 +468,13 @@ export class OrchestratorImpl implements Orchestrator {
 
       // Single-stage path: all other intents from Stage 1
       const intent = stage1Intent;
+      const stage1ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
+      void this.deps.journal?.captureInboundMessage(
+        run,
+        { content: request.content },
+        intent,
+        stage1ClassificationStatus,
+      ).catch(() => {});
 
       // Post intent-specific acknowledgement (best-effort)
       if (intent !== 'ignore') {
@@ -470,7 +487,7 @@ export class OrchestratorImpl implements Orchestrator {
         };
         const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
         try {
-          await this.postMessage(request.conversation, intentMessage);
+          await this.postMessage(request.conversation, intentMessage, run);
         } catch (err) {
           this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post intent acknowledgement');
         }
@@ -523,12 +540,26 @@ export class OrchestratorImpl implements Orchestrator {
         try {
           intent = await this.deps.intentClassifier.classify(feedback.content, context);
         } catch (err) {
+          void this.deps.journal?.captureInboundMessage(
+            run,
+            { content: feedback.content },
+            null,
+            'failed',
+          ).catch(() => {});
           this.restoreStageAfterClassificationFailure(run, routingStage, err);
           await this.postError(feedback.conversation, CLASSIFICATION_UNAVAILABLE_MESSAGE);
           return;
         }
         this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent, stage: routingStage }, 'Intent classified');
       }
+
+      const threadMsgClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
+      void this.deps.journal?.captureInboundMessage(
+        run,
+        { content: feedback.content },
+        intent,
+        threadMsgClassificationStatus,
+      ).catch(() => {});
 
       const handler = this.handlerRegistry.resolve({
         event_type: 'thread_message',
@@ -563,7 +594,7 @@ export class OrchestratorImpl implements Orchestrator {
       issueFiler: this.deps.issueFiler,
       channelRepoMap: this.deps.channelRepoMap,
       reacjiComplete: this.deps.reacjiComplete,
-      postMessage: (conversation, text) => this.postMessage(conversation, text),
+      postMessage: (conversation, text, run) => this.postMessage(conversation, text, run),
       postError: (conversation, text) => this.postError(conversation, text),
       transition: (targetRun, stage) => this.transition(targetRun, stage),
       failRun: (targetRun, conversation, error) => this.failRun(targetRun, conversation, error),
@@ -596,6 +627,7 @@ export class OrchestratorImpl implements Orchestrator {
       clearAgentRequestContext(run);
     }
     run.updated_at = new Date().toISOString();
+    void this.deps.journal?.captureRunEvent(run, 'transition', from, stage).catch(() => {});
     this.logger.info({ event: 'run.stage_transition', run_id: run.id, request_id: run.request_id, from_stage: from, to_stage: stage }, 'Stage transition');
     this._appendRunLog(run.request_id, `[${new Date().toISOString()}] Stage: ${from} → ${stage}`);
     this._persistRuns();
@@ -684,6 +716,7 @@ export class OrchestratorImpl implements Orchestrator {
     // The event loop is sequential, so a second new_request for the same request_id
     // would not arrive until the first is fully processed.
     this.runs.set(request.id, run);
+    void this.deps.journal?.captureRunEvent(run, 'created').catch(() => {});
     this._persistRuns();
     this.logger.info({ event: 'run.created', run_id: run.id, request_id: request.id }, 'Run created');
     return run;
@@ -695,12 +728,15 @@ export class OrchestratorImpl implements Orchestrator {
     await this.postError(conversation, `Sorry, something went wrong: ${String(error)}`);
   }
 
-  private async postMessage(conversation: ConversationRef, text: string): Promise<void> {
+  private async postMessage(conversation: ConversationRef, text: string, run?: Run): Promise<void> {
     if (this.deps.postMessage) {
       await this.deps.postMessage(conversation, text);
-      return;
+    } else {
+      await this.deps.adapter.reply(conversation, text);
     }
-    await this.deps.adapter.reply(conversation, text);
+    if (run && this.deps.journal) {
+      void this.deps.journal.captureOutboundMessage(run, text).catch(() => {});
+    }
   }
 
   private async postError(conversation: ConversationRef, text: string): Promise<void> {

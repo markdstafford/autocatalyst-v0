@@ -6,6 +6,7 @@ import type pino from 'pino';
 import { createLogger } from './logger.js';
 import type { Run } from '../types/runs.js';
 import { artifactKindForIntent } from '../types/artifact.js';
+import type { RunJournal } from './journal/run-journal.js';
 
 export interface RunStore {
   load(): Run[];
@@ -18,6 +19,7 @@ const TERMINAL_STAGES = new Set(['done', 'failed']);
 interface FileRunStoreOptions {
   logDestination?: pino.DestinationStream;
   legacyConversationFields?: LegacyConversationFields | LegacyConversationFields[];
+  journal?: RunJournal;
 }
 
 interface LegacyConversationFields {
@@ -31,6 +33,7 @@ export class FileRunStore implements RunStore {
   private readonly filePath: string;
   private readonly logger: pino.Logger;
   private readonly legacyConversationFields: LegacyConversationFields[];
+  private readonly journal?: RunJournal;
   public demotedIds: Set<string> = new Set();
 
   constructor(workspaceRoot: string, options?: FileRunStoreOptions) {
@@ -41,6 +44,7 @@ export class FileRunStore implements RunStore {
       : options?.legacyConversationFields
         ? [options.legacyConversationFields]
         : [];
+    this.journal = options?.journal;
   }
 
   load(): Run[] {
@@ -77,6 +81,9 @@ export class FileRunStore implements RunStore {
       // 4. Drop runs with missing workspace (terminal runs are exempt — their workspace may be cleaned up)
       if (!TERMINAL_STAGES.has(run.stage) && (!run.workspace_path || !fs.existsSync(run.workspace_path))) {
         this.logger.warn({ event: 'run_store.run_dropped', request_id: run.request_id, workspace_path: run.workspace_path }, 'Dropping run with missing workspace_path');
+        if (this.journal) {
+          void this.journal.captureRunEvent(run, 'pruned', run.stage, null).catch(() => {});
+        }
         droppedCount++;
         continue;
       }
@@ -84,6 +91,9 @@ export class FileRunStore implements RunStore {
       // 5. Demote stale stages
       if (STALE_STAGES.has(run.stage)) {
         const fromStage = run.stage;
+        if (this.journal) {
+          void this.journal.captureRunEvent(run, 'demoted', run.stage, 'failed').catch(() => {});
+        }
         run.stage = 'failed';
         run.updated_at = new Date().toISOString();
         this.demotedIds.add(run.request_id);

@@ -88,7 +88,7 @@ export interface DefaultHandlerRegistryDeps {
   issueFiler?: IssueFiler;
   channelRepoMap: ChannelRepoMap;
   reacjiComplete?: string | null;
-  postMessage: (conversation: ConversationRef, text: string) => Promise<void>;
+  postMessage: (conversation: ConversationRef, text: string, run?: Run) => Promise<void>;
   postError: (conversation: ConversationRef, text: string) => Promise<void>;
   transition: (run: Run, stage: RunStage) => void;
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
