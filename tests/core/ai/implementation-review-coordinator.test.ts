@@ -550,6 +550,31 @@ describe('ImplementationReviewCoordinator', () => {
       expect(run.gate_exchanges![0]).toMatchObject({ converged: false, review_status: 'non_converged', non_convergence_reason: 'max_rounds' });
     });
 
+    it('calls captureFeedback once per gate exchange during convergence', async () => {
+      const captureFeedback = vi.fn();
+      const deps = makeConvergenceDeps([
+        { status: 'findings', summary: 'Round 1.', findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }] },
+        { status: 'no_findings', summary: 'Round 2 clean.', findings: [] },
+      ], {
+        implementer: makeImplementer(makeCompleteResult({ review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }] })),
+      });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, captureFeedback });
+
+      expect(captureFeedback).toHaveBeenCalledTimes(2); // once per gate exchange
+      expect(captureFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({ gate: 'initial', round: 1 }),
+        run,
+      );
+      expect(captureFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({ gate: 'initial', round: 2, converged: true }),
+        run,
+      );
+      expect(run.review_exchanges).toHaveLength(0); // no legacy exchanges in convergence mode
+    });
+
     it('passes the proposer role route into the actual implementer review-response call', async () => {
       const deps = makeConvergenceDeps([
         { status: 'findings', summary: 'Round 1.', findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }] },
