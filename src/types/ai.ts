@@ -113,12 +113,44 @@ export type ImplementationReviewFindingCategory =
   | 'docs'
   | 'pr_readiness';
 
+export type LayeredConvergenceGateName = 'layout' | 'public_api' | 'private_api' | 'build';
+export type LayeredFindingScope = 'current_altitude' | 'lower_altitude' | 'prior_context';
+export type LayeredFindingReasonCode =
+  | 'altitude_contract_violation'
+  | 'layout_boundary'
+  | 'public_api_contract'
+  | 'private_api_contract'
+  | 'security_contract'
+  | 'documentation_gap'
+  | 'missing_lower_altitude_body'
+  | 'missing_lower_altitude_test'
+  | 'missing_lower_altitude_implementation'
+  | 'build_signal_unavailable_until_build';
+export type LayeredFindingDisposition = 'blocking' | 'info' | 'filtered_note';
+export type LayeredFindingFilterReason =
+  | 'invalid_layered_metadata'
+  | 'lower_altitude_scope'
+  | 'lower_altitude_reason_code'
+  | 'category_not_allowed';
+
+export interface StoredLayeredFindingMetadata {
+  scope?: LayeredFindingScope;
+  reason_code?: LayeredFindingReasonCode;
+  disposition: LayeredFindingDisposition;
+  filter_reason?: LayeredFindingFilterReason;
+  original_severity: ImplementationReviewFindingSeverity;
+  original_category: ImplementationReviewFindingCategory;
+}
+
 export interface ImplementationReviewFinding {
   id: string;
   severity: ImplementationReviewFindingSeverity;
   category: ImplementationReviewFindingCategory;
   finding: string;
   suggested_action?: string;
+  scope?: LayeredFindingScope;
+  reason_code?: LayeredFindingReasonCode;
+  layered?: StoredLayeredFindingMetadata;
 }
 
 export interface ImplementationReviewResult {

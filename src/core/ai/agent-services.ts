@@ -2110,12 +2110,31 @@ export function parseImplementationReviewResult(content: string, path: string): 
       if (typeof raw !== 'object' || raw === null) continue;
       const f = raw as Record<string, unknown>;
       if (typeof f['id'] === 'string' && typeof f['severity'] === 'string' && typeof f['category'] === 'string' && typeof f['finding'] === 'string') {
+        const VALID_SCOPES = new Set(['current_altitude', 'lower_altitude', 'prior_context']);
+        const VALID_REASON_CODES = new Set([
+          'altitude_contract_violation',
+          'layout_boundary',
+          'public_api_contract',
+          'private_api_contract',
+          'security_contract',
+          'documentation_gap',
+          'missing_lower_altitude_body',
+          'missing_lower_altitude_test',
+          'missing_lower_altitude_implementation',
+          'build_signal_unavailable_until_build',
+        ]);
+        const rawScope = f['scope'];
+        const rawReasonCode = f['reason_code'];
+        const scope = typeof rawScope === 'string' && VALID_SCOPES.has(rawScope) ? rawScope as ImplementationReviewFinding['scope'] : undefined;
+        const reason_code = typeof rawReasonCode === 'string' && VALID_REASON_CODES.has(rawReasonCode) ? rawReasonCode as ImplementationReviewFinding['reason_code'] : undefined;
         findings.push({
           id: f['id'],
           severity: f['severity'] as ImplementationReviewFinding['severity'],
           category: f['category'] as ImplementationReviewFinding['category'],
           finding: f['finding'],
           ...(typeof f['suggested_action'] === 'string' ? { suggested_action: f['suggested_action'] } : {}),
+          ...(scope !== undefined ? { scope } : {}),
+          ...(reason_code !== undefined ? { reason_code } : {}),
         });
       }
     }
