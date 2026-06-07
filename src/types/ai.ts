@@ -65,6 +65,7 @@ export interface AgentServiceTelemetry {
   role?: AgentRole | string;
   round?: number;
   gate?: 'initial' | 'final' | string;
+  staleConvergedApiRemoved?: boolean;
 }
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'max';

@@ -27,6 +27,7 @@ import {
   buildAuthoringApiProposePrompt,
   buildAuthoringApiCritiquePrompt,
   buildAuthoringApiRevisePrompt,
+  buildArtifactRevisePrompt,
 } from '../../../src/core/ai/agent-services.js';
 import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
 import { createLogger } from '../../../src/core/logger.js';
@@ -1911,6 +1912,44 @@ describe('buildArtifactTaskDecompositionPrompt', () => {
 
     expect(prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
     expect(prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+  });
+});
+
+describe('buildArtifactRevisePrompt', () => {
+  function makeFeedback(content = 'Please clarify the auth flow'): ThreadMessage {
+    return {
+      request_id: 'req-001',
+      channel: channel,
+      conversation: conversation,
+      origin: origin,
+      content,
+      author: 'U123',
+      received_at: new Date().toISOString(),
+    };
+  }
+
+  it('includes feedback content and artifact paths', () => {
+    const prompt = buildArtifactRevisePrompt(makeFeedback(), [], '/specs/feature.md', '/ws/.autocatalyst/result.json', '# Spec', []);
+
+    expect(prompt).toContain('Please clarify the auth flow');
+    expect(prompt).toContain('/specs/feature.md');
+    expect(prompt).toContain('/ws/.autocatalyst/result.json');
+    expect(prompt).toContain('# Spec');
+  });
+
+  it('does not include stale-API note when staleConvergedApiRemoved is false', () => {
+    const prompt = buildArtifactRevisePrompt(makeFeedback(), [], '/specs/feature.md', '/ws/.autocatalyst/result.json', '# Spec', [], false);
+
+    expect(prompt).not.toContain('## Converged API` section was removed');
+    expect(prompt).not.toContain('Do not invent or recreate a `## Converged API`');
+  });
+
+  it('includes stale-API-removal note when staleConvergedApiRemoved is true', () => {
+    const prompt = buildArtifactRevisePrompt(makeFeedback(), [], '/specs/feature.md', '/ws/.autocatalyst/result.json', '# Spec', [], true);
+
+    expect(prompt).toContain('## Converged API` section was removed');
+    expect(prompt).toContain('human feedback may have invalidated the agreed API contract');
+    expect(prompt).toContain('Do not invent or recreate a `## Converged API` section');
   });
 });
 

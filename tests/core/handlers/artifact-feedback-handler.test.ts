@@ -430,7 +430,7 @@ describe('ArtifactFeedbackHandler', () => {
       );
     });
 
-    it('calls revise() without extra options when section was removed', async () => {
+    it('passes staleConvergedApiRemoved: true in telemetry when section was removed', async () => {
       const specWithApi = '# Feature Spec\n\n## Converged API\n\nOld API.\n';
       const { handler, deps } = makeHandler({
         readFile: vi.fn().mockResolvedValue(specWithApi),
@@ -448,7 +448,7 @@ describe('ArtifactFeedbackHandler', () => {
         '/ws/request-001',
         undefined,
         expect.any(Function),
-        expect.objectContaining({ run_id: 'run-001' }),
+        expect.objectContaining({ run_id: 'run-001', staleConvergedApiRemoved: true }),
       );
     });
 
@@ -475,7 +475,7 @@ describe('ArtifactFeedbackHandler', () => {
         '/ws/request-001',
         undefined,
         expect.any(Function),
-        expect.objectContaining({ run_id: 'run-001' }),
+        expect.objectContaining({ run_id: 'run-001', staleConvergedApiRemoved: false }),
       );
     });
 

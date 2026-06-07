@@ -242,6 +242,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       reviseResultPath,
       currentArtifact,
       hasAnchors ? this.commentAnchorCodec?.promptInstructions(originalAnchors) ?? [] : [],
+      telemetry?.staleConvergedApiRemoved,
     );
 
     this.logger.debug(
@@ -1514,13 +1515,14 @@ function buildArtifactCreatePrompt(
   ].join('\n');
 }
 
-function buildArtifactRevisePrompt(
+export function buildArtifactRevisePrompt(
   feedback: ThreadMessage,
   artifact_comments: ArtifactComment[],
   artifact_path: string,
   reviseResultPath: string,
   currentArtifact: string,
   anchorInstructions: string[],
+  staleConvergedApiRemoved?: boolean,
 ): string {
   const commentSection = artifact_comments.length > 0
     ? [
@@ -1538,6 +1540,14 @@ function buildArtifactRevisePrompt(
     ? [``, `Use an empty array for comment_responses since there are no publisher comments.`]
     : [];
   const anchorInstructionLines = anchorInstructions.length > 0 ? [``, ...anchorInstructions] : [];
+  const staleApiNote = staleConvergedApiRemoved
+    ? [
+        ``,
+        `Note: A previously generated \`## Converged API\` section was removed from the draft because`,
+        `human feedback may have invalidated the agreed API contract. Revise the spec using the normal`,
+        `feedback path. Do not invent or recreate a \`## Converged API\` section.`,
+      ]
+    : [];
 
   return [
     `Revise the artifact below based on the following feedback.`,
@@ -1553,6 +1563,7 @@ function buildArtifactRevisePrompt(
     ...noCommentNote,
     `Do not signal completion until the result file has been written.`,
     ...anchorInstructionLines,
+    ...staleApiNote,
     ``,
     `Channel message:`,
     `<<<`,
