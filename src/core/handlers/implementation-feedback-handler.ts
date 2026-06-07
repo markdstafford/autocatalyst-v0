@@ -206,6 +206,7 @@ export class ImplementationFeedbackHandler {
           testing_steps: reviewedResult.testing_steps,
           resolved_items: reviewedResult.resolved_feedback_items ?? [],
           review_exchanges: run.review_exchanges,
+          gate_exchanges: run.gate_exchanges,
         });
       } catch (err) {
         this.deps.logger.error(

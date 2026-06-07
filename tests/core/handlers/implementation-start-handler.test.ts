@@ -4,7 +4,7 @@ import type { ThreadMessage } from '../../../src/types/events.js';
 import type { Run } from '../../../src/types/runs.js';
 import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN } from '../../helpers/channel-refs.js';
 import type { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
-import type { ImplementationReviewExchange } from '../../../src/types/ai.js';
+import type { GateReviewExchange, ImplementationReviewExchange } from '../../../src/types/ai.js';
 
 function makeReviewExchange(overrides: Partial<ImplementationReviewExchange> = {}): ImplementationReviewExchange {
   return {
@@ -524,6 +524,31 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     expect(deps.postMessage).toHaveBeenCalledWith(
       TEST_CONVERSATION,
       'Implementation complete. Feedback page: https://example.test/feedback-page-id',
+    );
+  });
+
+  it('passes gate_exchanges to implFeedbackPage.create when present', async () => {
+    const gateExchange: GateReviewExchange = {
+      id: 'gate-001',
+      gate: 'initial',
+      round: 1,
+      created_at: new Date().toISOString(),
+      proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+      critic_profile: { profile: 'review-agent', provider: 'claude_agent_sdk' },
+      review_status: 'no_findings',
+      review_summary: 'Gate passed.',
+      findings: [],
+      responses: [],
+      converged: true,
+      requires_human_retest: false,
+    };
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ gate_exchanges: [gateExchange] });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith(
+      expect.objectContaining({ gate_exchanges: [gateExchange] }),
     );
   });
 });

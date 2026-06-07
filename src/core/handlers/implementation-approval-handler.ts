@@ -176,6 +176,7 @@ export class ImplementationApprovalHandler {
             await this.deps.implFeedbackPage?.update?.(run.impl_feedback_ref, {
               summary: reviewedResult.summary,
               review_exchanges: run.review_exchanges,
+              gate_exchanges: run.gate_exchanges,
             });
           } catch (err) {
             this.deps.logger.error(

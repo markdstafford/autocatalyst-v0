@@ -210,6 +210,7 @@ export class ImplementationStartHandler {
         review_summary: reviewedResult.review_summary,
         testing_steps: reviewedResult.testing_steps,
         review_exchanges: run.review_exchanges,
+        gate_exchanges: run.gate_exchanges,
       });
       run.impl_feedback_ref = publishedReview.id;
       this.deps.persist();
