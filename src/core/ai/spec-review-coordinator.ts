@@ -138,9 +138,9 @@ export class SpecReviewCoordinator {
         'spec_review',
         { run_id: run.id, request_id: run.request_id },
       );
-      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'ok', drainSummary);
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
       reviewResult = parseSpecReviewResult(reviewResultContent, reviewResultPath);
+      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'ok', drainSummary);
     } catch (err) {
       this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'failed', undefined);
       return this.handleReviewFailure(run, artifact_path, String(err), onProgress);
@@ -264,9 +264,9 @@ export class SpecReviewCoordinator {
       model: { provider: profile.provider, name: profile.model ?? null },
       inference: { effort: profile.effort ?? null, thinking: profile.thinking ?? null },
       tokens: drainSummary?.terminal_usage ?? null,
-      assistant_turns: null,
-      tool_calls: null,
-      tool_results: null,
+      assistant_turns: drainSummary?.assistant_turn_count ?? null,
+      tool_calls: drainSummary?.tool_call_count ?? null,
+      tool_results: drainSummary?.tool_result_count ?? null,
       outcome,
       runner,
     });

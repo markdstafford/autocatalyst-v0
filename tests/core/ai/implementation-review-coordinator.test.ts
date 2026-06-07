@@ -66,7 +66,7 @@ function makeDeps(reviewResult: ImplementationReviewResult = { status: 'no_findi
     routingPolicy: makeRoutingPolicy(),
     policy: { max_initial_rounds: 1, max_final_rounds: 1, on_review_failure: 'warn' as const, retest_on_behavior_change: true },
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     readFile: vi.fn().mockResolvedValue(reviewJson),
     ...overrides,
   };
@@ -284,6 +284,62 @@ describe('ImplementationReviewCoordinator', () => {
       expect(run.review_exchanges![0].phase).toBe('final');
       const calls = (deps.routingPolicy.resolveOptional as ReturnType<typeof vi.fn>).mock.calls;
       expect(calls.some((c: unknown[]) => (c[0] as { task: string }).task === 'implementation.review.final')).toBe(true);
+    });
+  });
+
+  describe('captureSession', () => {
+    it('emits exactly one ok session with drain counts forwarded from AgentDrainSummary', async () => {
+      // Runner yields assistant events so drainAgentRunner accumulates non-zero counts.
+      const runner: AgentRunner = {
+        run: vi.fn().mockReturnValue((async function* () {
+          yield { type: 'assistant', content: [{ type: 'text', text: 'reviewing' }], tool_call_count: 2, tool_result_count: 2 };
+          yield { type: 'assistant', content: [{ type: 'text', text: 'done' }] };
+        })()),
+      };
+      const deps = makeDeps(undefined, { runner });
+      const captureSession = vi.fn();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, captureSession });
+      expect(captureSession).toHaveBeenCalledTimes(1);
+      expect(captureSession).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: 'ok',
+        step: 'implementation.review.initial',
+      }));
+      const record = captureSession.mock.calls[0][0] as Record<string, unknown>;
+      // Counts forwarded from drainSummary, not hardcoded null
+      expect(record['assistant_turns']).toBe(2);
+      expect(record['tool_calls']).toBe(2);
+      expect(record['tool_results']).toBe(2);
+    });
+
+    it('emits exactly one failed session and no ok session when result-file read throws', async () => {
+      // The ok emit now lives after readFile inside the try block.
+      // If readFile throws, only the catch-side failed session is emitted.
+      const deps = makeDeps(undefined, {
+        readFile: vi.fn().mockRejectedValue(new Error('ENOENT: no such file')),
+      });
+      const captureSession = vi.fn();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, captureSession });
+      expect(captureSession).toHaveBeenCalledTimes(1);
+      expect(captureSession).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
+    });
+
+    it('emits one failed session when drainAgentRunner throws — no duplicate', async () => {
+      const throwingRunner: AgentRunner = {
+        run: vi.fn().mockReturnValue((async function* () {
+          throw new Error('runner exploded');
+        })()),
+      };
+      const deps = makeDeps(undefined, { runner: throwingRunner });
+      const captureSession = vi.fn();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, captureSession });
+      expect(captureSession).toHaveBeenCalledTimes(1);
+      expect(captureSession).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
     });
   });
 
