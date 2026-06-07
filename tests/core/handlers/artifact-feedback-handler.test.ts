@@ -73,6 +73,8 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactFee
       warn: vi.fn(),
       error: vi.fn(),
     },
+    readFile: vi.fn().mockResolvedValue('# Feature Spec\n\nSome content.\n'),
+    writeFile: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 
@@ -106,6 +108,7 @@ describe('ArtifactFeedbackHandler', () => {
       undefined,
       expect.any(Function),
       expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
+      { staleConvergedApiRemoved: false },
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS-TYPED',
@@ -163,6 +166,7 @@ describe('ArtifactFeedbackHandler', () => {
       '# Current\n\n<span discussion-urls="discussion://disc-1">text</span>',
       expect.any(Function),
       expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
+      { staleConvergedApiRemoved: false },
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS001',
@@ -201,6 +205,7 @@ describe('ArtifactFeedbackHandler', () => {
       undefined,
       expect.any(Function),
       expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
+      { staleConvergedApiRemoved: false },
     );
     expect(deps.failRun).not.toHaveBeenCalled();
     expect(run.stage).toBe('reviewing_spec');
@@ -401,6 +406,158 @@ describe('ArtifactFeedbackHandler', () => {
       expect(result).toEqual({ status: 'failed' });
       expect(deps.artifactPublisher.updateArtifact).not.toHaveBeenCalled();
       expect(deps.failRun).toHaveBeenCalled();
+    });
+  });
+
+  describe('stale Converged API cleanup', () => {
+    it('removes ## Converged API section from local file before revise() for feature_spec', async () => {
+      const specWithApi = '# Feature Spec\n\nSome content.\n\n## Converged API\n\nOld API here.\n\n## Other Section\n\nMore.\n';
+      const { handler, deps } = makeHandler({
+        readFile: vi.fn().mockResolvedValue(specWithApi),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+      });
+      const run = makeRun();
+      const feedback = makeFeedback();
+
+      const result = await handler.handle(run, feedback);
+
+      expect(result).toEqual({ status: 'revised' });
+      expect(deps.writeFile).toHaveBeenCalledWith(
+        '/ws/request-001/context-human/specs/feature-test.md',
+        expect.not.stringContaining('## Converged API'),
+        'utf-8',
+      );
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'artifact.api_convergence.stale_section_removed', run_id: 'run-001' }),
+        'Removed stale generated API section before feedback revision',
+      );
+    });
+
+    it('passes staleConvergedApiRemoved: true to revise() when section was removed', async () => {
+      const specWithApi = '# Feature Spec\n\n## Converged API\n\nOld API.\n';
+      const { handler, deps } = makeHandler({
+        readFile: vi.fn().mockResolvedValue(specWithApi),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+      });
+      const run = makeRun();
+      const feedback = makeFeedback();
+
+      await handler.handle(run, feedback);
+
+      expect(deps.artifactAuthoringAgent.revise).toHaveBeenCalledWith(
+        feedback,
+        [],
+        '/ws/request-001/context-human/specs/feature-test.md',
+        '/ws/request-001',
+        undefined,
+        expect.any(Function),
+        expect.objectContaining({ run_id: 'run-001' }),
+        { staleConvergedApiRemoved: true },
+      );
+    });
+
+    it('does not warn and passes staleConvergedApiRemoved: false when no ## Converged API section', async () => {
+      const specWithoutApi = '# Feature Spec\n\nSome content.\n';
+      const { handler, deps } = makeHandler({
+        readFile: vi.fn().mockResolvedValue(specWithoutApi),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+      });
+      const run = makeRun();
+      const feedback = makeFeedback();
+
+      await handler.handle(run, feedback);
+
+      expect(deps.writeFile).not.toHaveBeenCalled();
+      expect(deps.logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'artifact.api_convergence.stale_section_removed' }),
+        expect.any(String),
+      );
+      expect(deps.artifactAuthoringAgent.revise).toHaveBeenCalledWith(
+        feedback,
+        [],
+        '/ws/request-001/context-human/specs/feature-test.md',
+        '/ws/request-001',
+        undefined,
+        expect.any(Function),
+        expect.objectContaining({ run_id: 'run-001' }),
+        { staleConvergedApiRemoved: false },
+      );
+    });
+
+    it('does not run cleanup for non-feature_spec artifact kinds', async () => {
+      const { handler, deps } = makeHandler({
+        readFile: vi.fn().mockResolvedValue('# Bug spec\n'),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+      });
+      const run = makeRun({
+        artifact: {
+          kind: 'bug_triage',
+          local_path: '/ws/request-001/context-human/specs/bug.md',
+          published_ref: { provider: 'artifact_publisher', id: 'CANVAS001' },
+          status: 'waiting_on_feedback',
+        },
+      });
+
+      await handler.handle(run, makeFeedback());
+
+      expect(deps.readFile).not.toHaveBeenCalled();
+      expect(deps.writeFile).not.toHaveBeenCalled();
+      expect(deps.artifactAuthoringAgent.revise).toHaveBeenCalledWith(
+        expect.anything(),
+        [],
+        '/ws/request-001/context-human/specs/bug.md',
+        '/ws/request-001',
+        undefined,
+        expect.any(Function),
+        expect.objectContaining({ run_id: 'run-001' }),
+        { staleConvergedApiRemoved: false },
+      );
+    });
+
+    it('logs a warning and continues when readFile throws during cleanup', async () => {
+      const { handler, deps } = makeHandler({
+        readFile: vi.fn().mockRejectedValue(new Error('file not found')),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+      });
+      const run = makeRun();
+
+      const result = await handler.handle(run, makeFeedback());
+
+      expect(result).toEqual({ status: 'revised' });
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'artifact.api_convergence.stale_section_cleanup_failed', run_id: 'run-001' }),
+        'Failed to check/remove stale converged API section',
+      );
+      expect(deps.artifactAuthoringAgent.revise).toHaveBeenCalledWith(
+        expect.anything(),
+        [],
+        '/ws/request-001/context-human/specs/feature-test.md',
+        '/ws/request-001',
+        undefined,
+        expect.any(Function),
+        expect.objectContaining({ run_id: 'run-001' }),
+        { staleConvergedApiRemoved: false },
+      );
+    });
+
+    it('also cleans pageMarkdown when ## Converged API section is removed from file', async () => {
+      const specWithApi = '# Feature Spec\n\n## Converged API\n\nOld API.\n';
+      const pageWithApi = '# Feature Spec\n\n## Converged API\n\nSame API.\n';
+      const { handler, deps } = makeHandler({
+        readFile: vi.fn().mockResolvedValue(specWithApi),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+        artifactContentSource: {
+          getContent: vi.fn().mockResolvedValue(pageWithApi),
+        },
+      });
+      const run = makeRun();
+      const feedback = makeFeedback();
+
+      await handler.handle(run, feedback);
+
+      const reviseCall = (deps.artifactAuthoringAgent.revise as ReturnType<typeof vi.fn>).mock.calls[0];
+      const passedPageMarkdown = reviseCall[4] as string;
+      expect(passedPageMarkdown).not.toContain('## Converged API');
     });
   });
 

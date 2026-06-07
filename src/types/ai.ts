@@ -350,6 +350,7 @@ export interface ArtifactAuthoringAgent {
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
     telemetry?: AgentServiceTelemetry,
+    options?: { staleConvergedApiRemoved?: boolean },
   ): Promise<ArtifactRevisionResult>;
   respondToSpecReview(
     artifact_path: string,

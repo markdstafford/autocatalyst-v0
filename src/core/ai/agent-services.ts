@@ -223,6 +223,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
     telemetry?: AgentServiceTelemetry,
+    options?: { staleConvergedApiRemoved?: boolean },
   ): Promise<ArtifactRevisionResult> {
     const reviseResultPath = join(workspace_path, '.autocatalyst', 'spec-revise-result.json');
     const originalAnchors = current_page_markdown && this.commentAnchorCodec
@@ -242,6 +243,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       reviseResultPath,
       currentArtifact,
       hasAnchors ? this.commentAnchorCodec?.promptInstructions(originalAnchors) ?? [] : [],
+      options,
     );
 
     this.logger.debug(
@@ -1521,6 +1523,7 @@ function buildArtifactRevisePrompt(
   reviseResultPath: string,
   currentArtifact: string,
   anchorInstructions: string[],
+  options?: { staleConvergedApiRemoved?: boolean },
 ): string {
   const commentSection = artifact_comments.length > 0
     ? [
@@ -1538,6 +1541,12 @@ function buildArtifactRevisePrompt(
     ? [``, `Use an empty array for comment_responses since there are no publisher comments.`]
     : [];
   const anchorInstructionLines = anchorInstructions.length > 0 ? [``, ...anchorInstructions] : [];
+  const staleApiNote = options?.staleConvergedApiRemoved
+    ? [
+        ``,
+        `A prior generated \`## Converged API\` section was removed before this revision because human feedback may invalidate it. Use the normal feedback revision path. Do not invent a replacement \`## Converged API\` section.`,
+      ]
+    : [];
 
   return [
     `Revise the artifact below based on the following feedback.`,
@@ -1553,6 +1562,7 @@ function buildArtifactRevisePrompt(
     ...noCommentNote,
     `Do not signal completion until the result file has been written.`,
     ...anchorInstructionLines,
+    ...staleApiNote,
     ``,
     `Channel message:`,
     `<<<`,
