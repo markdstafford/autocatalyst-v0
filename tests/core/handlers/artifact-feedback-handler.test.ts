@@ -479,6 +479,38 @@ describe('ArtifactFeedbackHandler', () => {
       );
     });
 
+    it('cleans the published markdown independently when the local file is already clean', async () => {
+      // Regression: the published/anchored markdown can carry a stale ## Converged API
+      // section even when the local spec file does not. It must still be stripped before
+      // revise() drafts from it, and staleConvergedApiRemoved must reflect either source.
+      const cleanLocal = '# Feature Spec\n\nSome content.\n';
+      const pageWithApi = '# Feature Spec\n\nSome content.\n\n## Converged API\n\nStale published API.\n';
+      const { handler, deps } = makeHandler({
+        readFile: vi.fn().mockResolvedValue(cleanLocal),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+        artifactContentSource: { getContent: vi.fn().mockResolvedValue(pageWithApi) },
+      });
+      const run = makeRun();
+      const feedback = makeFeedback();
+
+      await handler.handle(run, feedback);
+
+      // Local file was already clean → not rewritten.
+      expect(deps.writeFile).not.toHaveBeenCalled();
+
+      const reviseCall = (deps.artifactAuthoringAgent.revise as ReturnType<typeof vi.fn>).mock.calls[0];
+      // Published markdown handed to revise() must have the stale section stripped.
+      expect(typeof reviseCall[4]).toBe('string');
+      expect(reviseCall[4]).not.toContain('## Converged API');
+      // Flag set because the published source changed, even though the local file did not.
+      expect(reviseCall[6]).toEqual(expect.objectContaining({ staleConvergedApiRemoved: true }));
+      // Warned specifically about the published-markdown cleanup.
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'artifact.api_convergence.stale_section_removed', source: 'published_markdown' }),
+        expect.any(String),
+      );
+    });
+
     it('does not run cleanup for non-feature_spec artifact kinds', async () => {
       const { handler, deps } = makeHandler({
         readFile: vi.fn().mockResolvedValue('# Bug spec\n'),

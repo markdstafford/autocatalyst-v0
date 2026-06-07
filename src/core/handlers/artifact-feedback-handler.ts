@@ -98,9 +98,20 @@ export class ArtifactFeedbackHandler {
           error: String(err),
         }, 'Failed to check/remove stale converged API section');
       }
-      // Also clean page markdown if available
-      if (pageMarkdown && staleApiRemoved) {
-        pageMarkdown = removeConvergedApiSection(pageMarkdown);
+      // Also clean page markdown independently: the published/anchored markdown may
+      // still contain a stale ## Converged API section even when the local file does not.
+      if (pageMarkdown) {
+        const cleanedPage = removeConvergedApiSection(pageMarkdown);
+        if (cleanedPage !== pageMarkdown) {
+          pageMarkdown = cleanedPage;
+          staleApiRemoved = true;
+          this.deps.logger.warn({
+            event: 'artifact.api_convergence.stale_section_removed',
+            run_id: run.id,
+            request_id: run.request_id,
+            source: 'published_markdown',
+          }, 'Removed stale generated API section from published markdown before feedback revision');
+        }
       }
     }
 
