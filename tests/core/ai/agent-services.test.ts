@@ -950,6 +950,52 @@ describe('drainAgentRunner summary', () => {
     const parsed = lines.map(l => JSON.parse(l));
     expect(parsed.find(l => l.event === 'agent.drain_failed')).toBeDefined();
   });
+
+  it('captures terminal_usage from result event with usage', async () => {
+    const dest = new PassThrough();
+    dest.on('data', () => {});
+
+    async function* eventsWithUsage(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'assistant', content: [{ type: 'text', text: 'done' }] };
+      yield { type: 'result', terminal_usage: { input: 100, output: 50, cache_read: 10, cache_write: 20 } } as AgentRunEvent;
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    const summary = await drainAgentRunner(eventsWithUsage(), undefined, logger, 'test-phase');
+    dest.end();
+
+    expect(summary.terminal_usage).toEqual({ input: 100, output: 50, cache_read: 10, cache_write: 20 });
+  });
+
+  it('sets terminal_usage to null when result event has null terminal_usage', async () => {
+    const dest = new PassThrough();
+    dest.on('data', () => {});
+
+    async function* eventsWithNullUsage(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'result', terminal_usage: null } as AgentRunEvent;
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    const summary = await drainAgentRunner(eventsWithNullUsage(), undefined, logger, 'test-phase');
+    dest.end();
+
+    expect(summary.terminal_usage).toBeNull();
+  });
+
+  it('leaves terminal_usage undefined when no result event is present', async () => {
+    const dest = new PassThrough();
+    dest.on('data', () => {});
+
+    async function* eventsWithoutResult(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'assistant', content: [{ type: 'text', text: 'done' }] };
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    const summary = await drainAgentRunner(eventsWithoutResult(), undefined, logger, 'test-phase');
+    dest.end();
+
+    expect(summary.terminal_usage).toBeUndefined();
+  });
 });
 
 describe('validateRequiredResultFile', () => {

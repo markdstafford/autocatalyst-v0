@@ -768,6 +768,7 @@ export async function drainAgentRunner(
   let tool_call_count = 0;
   let tool_result_count = 0;
   let latestDiagnostics: AgentDrainSummary['diagnostics'];
+  let latestTerminalUsage: AgentDrainSummary['terminal_usage'];
 
   const telCtx = {
     ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
@@ -780,9 +781,11 @@ export async function drainAgentRunner(
     for await (const event of events) {
       event_count++;
 
-      // Capture diagnostics propagated from terminal runner events
+      // Capture diagnostics and terminal_usage propagated from terminal runner events
       const eventDiag = (event as { diagnostics?: AgentDrainSummary['diagnostics'] }).diagnostics;
       if (eventDiag) latestDiagnostics = eventDiag;
+      const eventTerminalUsage = (event as { terminal_usage?: AgentDrainSummary['terminal_usage'] }).terminal_usage;
+      if (eventTerminalUsage !== undefined) latestTerminalUsage = eventTerminalUsage;
 
       const content = assistantContent(event);
       if (content) {
@@ -832,6 +835,7 @@ export async function drainAgentRunner(
     tool_call_count,
     tool_result_count,
     elapsed_ms,
+    ...(latestTerminalUsage !== undefined ? { terminal_usage: latestTerminalUsage } : {}),
     ...(latestDiagnostics ? { diagnostics: latestDiagnostics } : {}),
   };
 

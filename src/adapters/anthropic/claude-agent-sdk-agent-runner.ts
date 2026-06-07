@@ -221,7 +221,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     let assistantTurnCount = 0;
     let seenTerminalResult = false;
     let terminalDiagnostics: { stderr_excerpt_redacted?: string } | undefined;
-    let terminalUsage: { input_tokens: number; output_tokens: number } | undefined;
+    let terminalUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
     let pendingToolResultCount = 0;
 
     const telemetry = request.telemetry ?? {};
@@ -249,7 +249,12 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         if ((message as SDKMessage).type === 'result') {
           seenTerminalResult = true;
           const result = message as unknown as SDKResultMessage;
-          terminalUsage = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens };
+          terminalUsage = {
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+            cache_creation_input_tokens: (result.usage as Record<string, unknown>)['cache_creation_input_tokens'] as number | undefined,
+            cache_read_input_tokens: (result.usage as Record<string, unknown>)['cache_read_input_tokens'] as number | undefined,
+          };
           const sdkOutcome = result.is_error ? 'error' : 'success';
           outcome = sdkOutcome;
           this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome: sdkOutcome });
@@ -307,8 +312,20 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           } else {
             yield event;
           }
-        } else if ((message as SDKMessage).type === 'result' && terminalDiagnostics) {
-          yield { ...event, diagnostics: terminalDiagnostics } as AgentRunEvent;
+        } else if ((message as SDKMessage).type === 'result') {
+          const terminal_usage = terminalUsage
+            ? {
+                input: terminalUsage.input_tokens ?? 0,
+                output: terminalUsage.output_tokens ?? 0,
+                cache_read: terminalUsage.cache_read_input_tokens ?? 0,
+                cache_write: terminalUsage.cache_creation_input_tokens ?? 0,
+              }
+            : null;
+          yield {
+            ...event,
+            ...(terminalDiagnostics ? { diagnostics: terminalDiagnostics } : {}),
+            terminal_usage,
+          } as AgentRunEvent;
         } else {
           yield event;
         }
