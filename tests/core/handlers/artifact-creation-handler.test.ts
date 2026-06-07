@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { ArtifactCreationHandler } from '../../../src/core/handlers/artifact-creation-handler.js';
 import type { Request } from '../../../src/types/events.js';
 import type { Run } from '../../../src/types/runs.js';
@@ -326,6 +329,81 @@ describe('ArtifactCreationHandler', () => {
 
       expect(deps.artifactPublisher.createArtifact).toHaveBeenCalled();
       expect(deps.failRun).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('authoring API convergence — integration (real file I/O)', () => {
+    let tmpDir: string;
+
+    afterEach(async () => {
+      if (tmpDir) {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('full enabled speccing lifecycle writes Converged API section before Task list and transitions to reviewing_spec', async () => {
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ach-integration-'));
+      const specFile = path.join(tmpDir, 'feature-spec.md');
+      const specContent = [
+        '# Feature Spec',
+        '',
+        '## What',
+        'Build a setup wizard.',
+        '',
+        '## Tech spec',
+        'Use TypeScript.',
+        '',
+        '## Task list',
+        '',
+      ].join('\n');
+      await fs.writeFile(specFile, specContent, 'utf-8');
+
+      const convergedMarkdown = '## Converged API\n\n### Notes\n\nTest.';
+
+      const createTechSpecDraft = vi.fn().mockResolvedValue({ artifact_path: specFile });
+      const coordinatorRun = vi.fn().mockResolvedValue({
+        artifact: { files: [], public_api: [], types: [], notes: 'Test.' },
+        markdown: convergedMarkdown,
+        converged: true,
+      });
+      const decomposeTasks = vi.fn().mockResolvedValue({ artifact_path: specFile });
+
+      const { handler, deps } = makeHandler({
+        workspaceManager: {
+          create: vi.fn().mockResolvedValue({ workspace_path: tmpDir, branch: 'spec/request-001' }),
+          destroy: vi.fn().mockResolvedValue(undefined),
+        },
+        artifactAuthoringAgent: {
+          create: vi.fn(),
+          createTechSpecDraft,
+          decomposeTasks,
+        },
+        specAuthoringPolicy: { api_convergence: { enabled: true, max_rounds: 2, allow_same_model: false } },
+        authoringApiConvergenceCoordinator: { run: coordinatorRun },
+        // Use real fs — omit readFile/writeFile so the handler defaults to node:fs/promises
+      });
+
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      // Verify steps were called
+      expect(createTechSpecDraft).toHaveBeenCalledOnce();
+      expect(coordinatorRun).toHaveBeenCalledWith(expect.objectContaining({
+        artifact_path: specFile,
+        working_directory: tmpDir,
+      }));
+      expect(decomposeTasks).toHaveBeenCalledOnce();
+      expect(deps.failRun).not.toHaveBeenCalled();
+
+      // Read the final spec file from disk
+      const finalSpec = await fs.readFile(specFile, 'utf-8');
+
+      // Assert section ordering
+      expect(finalSpec.indexOf('## Tech spec')).toBeLessThan(finalSpec.indexOf('## Converged API'));
+      expect(finalSpec.indexOf('## Converged API')).toBeLessThan(finalSpec.indexOf('## Task list'));
+
+      // Assert the run transitioned to reviewing_spec
+      expect(run.stage).toBe('reviewing_spec');
     });
   });
 
