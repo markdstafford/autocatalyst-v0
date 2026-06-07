@@ -834,10 +834,44 @@ describe('ImplementationReviewCoordinator', () => {
       expect(run.gate_exchanges![1].gate).toBe('build');
     });
 
+    it('depth: public_api runs layout, public_api, then build in order', async () => {
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'public_api', 'build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(3);
+      expect(run.gate_exchanges!.map(g => g.gate)).toEqual(['layout', 'public_api', 'build']);
+    });
+
+    it('depth: full runs all four altitudes in order', async () => {
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'public_api', 'private_api', 'build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(4);
+      expect(run.gate_exchanges!.map(g => g.gate)).toEqual(['layout', 'public_api', 'private_api', 'build']);
+    });
+
     it('fails immediately when an early altitude does not converge', async () => {
       // layout: blocker on round 1 with max_initial_rounds=1 → fails
       const readFile = vi.fn().mockImplementation(async () => {
-        return JSON.stringify({ status: 'findings', summary: 'Blocked.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Bad layout.' }] });
+        return JSON.stringify({ status: 'findings', summary: 'Blocked.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Bad layout.', scope: 'current_altitude', reason_code: 'layout_boundary' }] });
       });
       const deps = makeDeps(undefined, { readFile });
       deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };

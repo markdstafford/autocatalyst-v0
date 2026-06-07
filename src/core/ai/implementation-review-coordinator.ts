@@ -26,11 +26,14 @@ import {
   buildInitialReviewPrompt,
   buildFinalReviewPrompt,
   buildImplementerResponsePrompt,
+  buildLayeredCritiquePrompt,
+  buildLayeredRevisePrompt,
   parseImplementationReviewResult,
   drainAgentRunner,
 } from './agent-services.js';
 import { agentProfileSummary } from './routing-policy.js';
-import type { LayeredConvergenceGate } from './layered-convergence-policy.js';
+import { allowedCategoriesForGate, type LayeredConvergenceGate } from './layered-convergence-policy.js';
+import { filterLayeredFindings } from './layered-finding-filter.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
@@ -443,11 +446,24 @@ export class ImplementationReviewCoordinator {
       const diffContext = await this.getGitDiff(working_directory);
       const changedFiles = await this.getChangedFiles(working_directory);
 
-      // Build critic prompt with convergence context
+      // Build critic prompt with convergence context.
+      // For early layered altitudes, use the altitude-aware critique prompt with
+      // allowed-category guidance; build/initial/final keep the existing prompts.
       const convergenceContext = { gate, round };
-      const prompt = phase === 'initial'
-        ? buildInitialReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext)
-        : buildFinalReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext);
+      const isEarlyLayeredGate = gate === 'layout' || gate === 'public_api' || gate === 'private_api';
+      const prompt = isEarlyLayeredGate
+        ? buildLayeredCritiquePrompt({
+            gate,
+            artifactPath: artifact_path,
+            workingDirectory: working_directory,
+            diffContext,
+            changedFiles,
+            round,
+            allowedCategories: allowedCategoriesForGate(gate as LayeredConvergenceGate),
+          })
+        : phase === 'initial'
+          ? buildInitialReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext)
+          : buildFinalReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext);
 
       // Run critic
       let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
@@ -526,7 +542,17 @@ export class ImplementationReviewCoordinator {
         'Convergence review round completed',
       );
 
-      const blockingFindings = this.blockingFindings(reviewResult.findings);
+      // For layered early altitudes, enrich findings with disposition metadata
+      // and use the filter-derived blocking set; otherwise keep legacy behavior.
+      let effectiveFindings = reviewResult.findings;
+      let blockingFindings: ImplementationReviewFinding[];
+      if (isEarlyLayeredGate) {
+        const filterResult = filterLayeredFindings({ gate, round, findings: reviewResult.findings, runId: run.id });
+        effectiveFindings = filterResult.findings;
+        blockingFindings = filterResult.blockingFindings;
+      } else {
+        blockingFindings = this.blockingFindings(reviewResult.findings);
+      }
 
       // Check for convergence
       if (reviewResult.status === 'no_findings' || blockingFindings.length === 0) {
@@ -539,7 +565,7 @@ export class ImplementationReviewCoordinator {
           critic_profile: criticSummary,
           review_status: 'converged',
           review_summary: reviewResult.summary,
-          findings: reviewResult.findings,
+          findings: effectiveFindings,
           responses: [],
           converged: true,
           requires_human_retest: reviewResult.requires_human_retest ?? false,
@@ -567,7 +593,7 @@ export class ImplementationReviewCoordinator {
           critic_profile: criticSummary,
           review_status: 'non_converged',
           review_summary: reviewResult.summary,
-          findings: reviewResult.findings,
+          findings: effectiveFindings,
           responses: [],
           converged: false,
           non_convergence_reason: 'oscillation',
@@ -596,7 +622,7 @@ export class ImplementationReviewCoordinator {
           critic_profile: criticSummary,
           review_status: 'non_converged',
           review_summary: reviewResult.summary,
-          findings: reviewResult.findings,
+          findings: effectiveFindings,
           responses: [],
           converged: false,
           non_convergence_reason: 'max_rounds',
@@ -614,8 +640,22 @@ export class ImplementationReviewCoordinator {
         return { status: 'failed', error: `Implementation review ${phase} did not converge after ${maxRounds} rounds` };
       }
 
-      // Run proposer response
-      const responsePrompt = buildImplementerResponsePrompt(artifact_path, working_directory, currentResult, blockingFindings, convergenceContext);
+      // Run proposer response. Early layered altitudes use the altitude-aware
+      // revise prompt so the proposer stays within the current altitude contract.
+      const responsePrompt = isEarlyLayeredGate
+        ? buildLayeredRevisePrompt({
+            gate,
+            artifactPath: artifact_path,
+            workingDirectory: working_directory,
+            findings: blockingFindings.map(f => ({
+              id: f.id,
+              severity: f.severity,
+              category: f.category,
+              finding: f.finding,
+              ...(f.suggested_action ? { suggested_action: f.suggested_action } : {}),
+            })),
+          })
+        : buildImplementerResponsePrompt(artifact_path, working_directory, currentResult, blockingFindings, convergenceContext);
       const proposerTelemetry: AgentServiceTelemetry = {
         run_id: run.id,
         request_id: run.request_id,
@@ -668,7 +708,7 @@ export class ImplementationReviewCoordinator {
         critic_profile: criticSummary,
         review_status: 'addressed',
         review_summary: reviewResult.summary,
-        findings: reviewResult.findings,
+        findings: effectiveFindings,
         responses,
         converged: false,
         requires_human_retest: proposerResult.requires_human_retest ?? false,
