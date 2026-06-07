@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type pino from 'pino';
 import type {
+  AgentDrainSummary,
   AgentInvocationMetadata,
   AgentProfile,
   AgentRunner,
@@ -118,7 +119,7 @@ export class SpecReviewCoordinator {
     let reviewResult: SpecReviewResult;
     const ts_start = new Date().toISOString();
     try {
-      await drainAgentRunner(
+      const drainSummary = await drainAgentRunner(
         this.deps.runner.run({
           route: { task: 'spec.review', artifact_kind },
           profile: reviewProfile,
@@ -137,11 +138,11 @@ export class SpecReviewCoordinator {
         'spec_review',
         { run_id: run.id, request_id: run.request_id },
       );
-      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'ok');
+      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'ok', drainSummary);
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
       reviewResult = parseSpecReviewResult(reviewResultContent, reviewResultPath);
     } catch (err) {
-      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'failed');
+      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'failed', undefined);
       return this.handleReviewFailure(run, artifact_path, String(err), onProgress);
     }
 
@@ -251,6 +252,7 @@ export class SpecReviewCoordinator {
     profile: AgentProfile,
     ts_start: string,
     outcome: 'ok' | 'failed',
+    drainSummary: AgentDrainSummary | undefined,
   ): void {
     if (!captureSession) return;
     const runner = profile.provider === 'openai_agent_sdk' ? 'openai_agent' : 'anthropic_agent';
@@ -261,7 +263,7 @@ export class SpecReviewCoordinator {
       ts_end: new Date().toISOString(),
       model: { provider: profile.provider, name: profile.model ?? null },
       inference: { effort: profile.effort ?? null, thinking: profile.thinking ?? null },
-      tokens: null,
+      tokens: drainSummary?.terminal_usage ?? null,
       assistant_turns: null,
       tool_calls: null,
       tool_results: null,

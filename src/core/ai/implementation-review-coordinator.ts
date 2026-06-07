@@ -18,6 +18,7 @@ import type {
 } from '../../types/ai.js';
 import type { Run } from '../../types/runs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
+import type { AgentDrainSummary } from '../../types/ai.js';
 import {
   buildInitialReviewPrompt,
   buildFinalReviewPrompt,
@@ -153,7 +154,7 @@ export class ImplementationReviewCoordinator {
             }
           : onProgress;
 
-      await drainAgentRunner(
+      const drainSummary = await drainAgentRunner(
         this.deps.runner.run({
           route: { task: routeTask },
           profile: reviewProfile,
@@ -173,11 +174,11 @@ export class ImplementationReviewCoordinator {
         { run_id: run.id, request_id: run.request_id },
       );
 
-      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'ok');
+      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'ok', drainSummary);
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
       reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
     } catch (err) {
-      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'failed');
+      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'failed', undefined);
       this.deps.logger.error(
         {
           event: 'implementation.review.round_failed',
@@ -308,6 +309,7 @@ export class ImplementationReviewCoordinator {
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
     ts_start: string,
     outcome: 'ok' | 'failed',
+    drainSummary: AgentDrainSummary | undefined,
   ): void {
     if (!captureSession) return;
     const runner = profile.provider === 'openai_agent_sdk' ? 'openai_agent' : 'anthropic_agent';
@@ -318,7 +320,7 @@ export class ImplementationReviewCoordinator {
       ts_end: new Date().toISOString(),
       model: { provider: profile.provider, name: profile.model ?? null },
       inference: { effort: profile.effort ?? null, thinking: profile.thinking ?? null },
-      tokens: null,
+      tokens: drainSummary?.terminal_usage ?? null,
       assistant_turns: null,
       tool_calls: null,
       tool_results: null,
