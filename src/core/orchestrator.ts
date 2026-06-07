@@ -360,7 +360,7 @@ export class OrchestratorImpl implements Orchestrator {
 
         // Post interim message immediately
         try {
-          await this.postMessage(request.conversation, `Looking up issue #${ref.number}…`);
+          await this.postMessage(request.conversation, `Looking up issue #${ref.number}…`, run);
         } catch (err) {
           this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post interim issue lookup message');
         }
@@ -686,7 +686,7 @@ export class OrchestratorImpl implements Orchestrator {
     const message = "Server restarted while this was running. The run has been marked as failed. Reply in this thread to try again.";
     for (const run of runs) {
       if (!run.conversation) continue;
-      this.postMessage(run.conversation, message).catch(err => {
+      this.postMessage(run.conversation, message, run).catch(err => {
         this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post restart notification');
       });
     }
