@@ -10,9 +10,21 @@ export class DefaultAgentRoutingPolicy implements AgentRoutingPolicy {
     this.config = config;
   }
 
+  private profileNameFor(route: AgentRoute): string | undefined {
+    if (route.role) {
+      const roleKey = `${route.task}:${route.role}`;
+      const roleProfileName = this.config.routing[roleKey];
+      if (roleProfileName) return roleProfileName;
+    }
+    return this.config.routing[route.task];
+  }
+
   resolve(route: AgentRoute): AgentProfile {
-    const profileName = this.config.routing[route.task];
+    const profileName = this.profileNameFor(route);
     if (!profileName) {
+      if (route.role) {
+        throw new Error(`No routing entry for task '${route.task}' or role key '${route.task}:${route.role}'`);
+      }
       throw new Error(`No routing entry for task '${route.task}'`);
     }
     const profile = this.config.profiles.find(p => p.name === profileName)!;
@@ -22,7 +34,7 @@ export class DefaultAgentRoutingPolicy implements AgentRoutingPolicy {
   }
 
   resolveOptional(route: AgentRoute): AgentProfile | null {
-    const profileName = this.config.routing[route.task];
+    const profileName = this.profileNameFor(route);
     if (!profileName) return null;
     const profile = this.config.profiles.find(p => p.name === profileName);
     if (!profile) return null;

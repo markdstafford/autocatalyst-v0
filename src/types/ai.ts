@@ -33,8 +33,11 @@ export type AgentTaskKind =
   | 'issue.triage'
   | 'pr.title_generate';
 
+export type AgentRole = 'proposer' | 'critic';
+
 export interface AgentRoute {
   task: AgentTaskKind;
+  role?: AgentRole | string;
   stage?: RunStage | 'new_thread' | string;
   intent?: Intent;
   artifact_kind?: ArtifactKind;
