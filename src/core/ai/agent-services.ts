@@ -46,6 +46,23 @@ import type { ArtifactCommentAnchorCodec } from '../../types/publisher.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
+export interface GatePromptInput {
+  gate: 'layout' | 'public_api' | 'private_api' | 'build' | string;
+  artifactPath: string;
+  workingDirectory: string;
+  planPath?: string;
+  implementationResult?: unknown;
+  diffContext?: string;
+  changedFiles?: string[];
+  round?: number;
+  allowedCategories?: string[];
+  priorSummaries?: Array<{ gate: string; summary: string; checkpoint_ref?: string }>;
+}
+
+export interface GateRevisionPromptInput extends GatePromptInput {
+  findings: Array<{ id: string; severity: string; category: string; finding: string; suggested_action?: string }>;
+}
+
 function emitSessionRecord(
   telemetry: AgentServiceTelemetry | undefined,
   profile: AgentProfile,
@@ -2147,4 +2164,104 @@ export function parseImplementationReviewResult(content: string, path: string): 
     requires_human_retest: obj['requires_human_retest'] === true,
     ...(typeof obj['error'] === 'string' ? { error: obj['error'] } : {}),
   };
+}
+
+export function buildLayeredProposePrompt(input: GatePromptInput): string {
+  const { gate, artifactPath, planPath, priorSummaries = [] } = input;
+  const gateLabel = gate === 'public_api' ? 'Public API' : gate === 'private_api' ? 'Private API' : gate.charAt(0).toUpperCase() + gate.slice(1);
+
+  const priorSummaryText = priorSummaries.length > 0
+    ? `\n\nPrior altitude summaries:\n${priorSummaries.map(s => `- ${s.gate}: ${s.summary}`).join('\n')}`
+    : '';
+
+  const gateInstructions = ({
+    layout: `Layout altitude: Write skeleton files, modules, classes, exported-name comments, and high-level intent comments only.
+Do not add function signatures, type definitions with meaningful fields, bodies, or tests.
+Use TODO(gate-layout) markers where lower-altitude work will go.`,
+    public_api: `Public API altitude: Write exported signatures, public types, public constants, module boundary error contracts, and public doc comments only.
+Do not add private helper signatures, bodies, or tests.
+Use TODO(gate-public_api) markers where lower-altitude work will go.`,
+    private_api: `Private API altitude: Write internal helper signatures, internal types, docstrings, and responsibility comments only.
+Do not add bodies or tests except a single \`throw new Error("TODO(gate-private_api)")\` placeholder if TypeScript syntax requires it.
+Use TODO(gate-private_api) markers where lower-altitude work will go.`,
+    build: `Build altitude: Implement all function bodies, tests, documentation updates, and final cleanup.
+Preserve the converged layout, public API, and private API contracts from prior altitudes unless a build finding requires changing them.`,
+  } as Record<string, string>)[gate] ?? `${gateLabel} altitude: Implement only the work appropriate for this altitude.`;
+
+  return `You are implementing the ${gateLabel} altitude of a layered implementation pass.
+
+Spec: ${artifactPath}${planPath ? `\nPlan: ${planPath}` : ''}${priorSummaryText}
+
+${gateInstructions}
+
+Provide a short altitude summary describing what you added at this altitude.
+Output structured implementation results as required by the implementation contract.
+Never include secrets, credentials, or sensitive values in your output.`;
+}
+
+export function buildLayeredCritiquePrompt(input: GatePromptInput): string {
+  const { gate, artifactPath, diffContext = '', changedFiles = [], round = 1, allowedCategories = [], priorSummaries = [] } = input;
+  const isEarlyGate = gate === 'layout' || gate === 'public_api' || gate === 'private_api';
+  const gateLabel = gate === 'public_api' ? 'Public API' : gate === 'private_api' ? 'Private API' : gate.charAt(0).toUpperCase() + gate.slice(1);
+
+  const priorSummaryText = priorSummaries.length > 0
+    ? `\n\nPrior accepted altitudes:\n${priorSummaries.map(s => `- ${s.gate}: ${s.summary}`).join('\n')}`
+    : '';
+
+  const earlyGateContract = isEarlyGate ? `
+You are reviewing a ${gate}-only diff. Signatures and/or bodies may be intentionally absent and out of scope.
+TODO(gate-*) markers are expected and correct at this altitude.
+Do not file missing-body, missing-test, or missing-implementation findings for work that belongs to a lower altitude.
+
+Allowed finding categories: ${allowedCategories.join(', ')}
+Findings with categories outside this list will not block convergence.
+
+For each finding, you MUST include:
+- "scope": "current_altitude" | "lower_altitude" | "prior_context"
+- "reason_code": one of altitude_contract_violation, layout_boundary, public_api_contract, private_api_contract, security_contract, documentation_gap, missing_lower_altitude_body, missing_lower_altitude_test, missing_lower_altitude_implementation, build_signal_unavailable_until_build
+
+If a finding is about missing bodies, tests, or implementation that belongs to a lower altitude, use scope: "lower_altitude" and the appropriate reason_code.` : `
+Review for correctness, test coverage, security, maintainability, documentation, and PR readiness.
+The build proposer should preserve converged layout, public API, and private API contracts from prior altitudes.
+Flag any unapproved changes to exported signatures, public types, module boundaries, or private helper signatures.`;
+
+  return `You are reviewing the ${gateLabel} altitude of a layered implementation pass. This is round ${round}.
+
+Spec: ${artifactPath}${priorSummaryText}
+
+Changed files: ${changedFiles.join(', ') || 'none'}
+
+Git diff:
+\`\`\`diff
+${diffContext}
+\`\`\`
+${earlyGateContract}
+
+Output your review as a JSON object with the existing ImplementationReviewResult structure.
+Never include raw prompts, secrets, or credential values in your output.
+Do not edit files — only review.`;
+}
+
+export function buildLayeredRevisePrompt(input: GateRevisionPromptInput): string {
+  const { gate, artifactPath, planPath, findings, priorSummaries = [] } = input;
+  const gateLabel = gate === 'public_api' ? 'Public API' : gate === 'private_api' ? 'Private API' : gate.charAt(0).toUpperCase() + gate.slice(1);
+
+  const findingsList = findings
+    .map(f => `- [${f.id}] (${f.severity}/${f.category}): ${f.finding}${f.suggested_action ? ` — Suggested: ${f.suggested_action}` : ''}`)
+    .join('\n');
+
+  const priorSummaryText = priorSummaries.length > 0
+    ? `\n\nPrior altitude summaries:\n${priorSummaries.map(s => `- ${s.gate}: ${s.summary}`).join('\n')}`
+    : '';
+
+  return `You are revising the ${gateLabel} altitude implementation to address critic findings.
+
+Spec: ${artifactPath}${planPath ? `\nPlan: ${planPath}` : ''}${priorSummaryText}
+
+Findings to address:
+${findingsList}
+
+Address each finding above. Stay within the ${gateLabel} altitude contract — do not add lower-altitude work.
+Output structured implementation results as required by the implementation contract.
+Never include secrets, credentials, or sensitive values in your output.`;
 }
