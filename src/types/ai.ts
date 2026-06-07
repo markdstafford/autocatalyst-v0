@@ -148,6 +148,25 @@ export interface ImplementationReviewExchange {
   requires_human_retest: boolean;
 }
 
+export type GateReviewName = 'initial' | 'final' | string;
+export type GateNonConvergenceReason = 'max_rounds' | 'oscillation';
+
+export interface GateReviewExchange {
+  id: string;
+  gate: GateReviewName;
+  round: number;
+  created_at: string;
+  proposer_profile: AgentProfileSummary;
+  critic_profile: AgentProfileSummary;
+  review_status: ImplementationReviewExchangeStatus | 'non_converged' | 'converged';
+  review_summary: string;
+  findings: ImplementationReviewFinding[];
+  responses: ImplementationReviewResponseItem[];
+  converged: boolean;
+  non_convergence_reason?: GateNonConvergenceReason;
+  requires_human_retest: boolean;
+}
+
 export interface AgentRoutingPolicy {
   resolve(route: AgentRoute): AgentProfile;
   resolveOptional(route: AgentRoute): AgentProfile | null;
