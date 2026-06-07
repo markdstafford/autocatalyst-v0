@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
+import { ModelSessionBudget } from '../../../src/core/journal/model-session-budget.js';
 import type { AgentRunner, AgentRoutingPolicy, ImplementationAgent, ImplementationResult, ImplementationReviewResult, AgentProfile, GateReviewExchange } from '../../../src/types/ai.js';
 import type { Run } from '../../../src/types/runs.js';
 
@@ -1221,5 +1222,33 @@ describe('runLayeredImplementation — regression: no forbidden git operations',
     expect((run as Record<string, unknown>)['gate_exchanges']).toBeUndefined();
     // Runner called at most once (single-pass review)
     expect(freshDeps.runner.run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runLayeredImplementation — model-session budget enforcement', () => {
+  it('fails before critic execution when budget is exhausted', async () => {
+    // Budget with limit 0 means no sessions can be reserved
+    const w = { append: vi.fn().mockResolvedValue(undefined) };
+    const sessionBudget = new ModelSessionBudget({ runId: 'run-1', requestId: 'req-1', limit: 0, writer: w });
+
+    const findingsResult: ImplementationReviewResult = {
+      status: 'has_findings',
+      summary: 'Blockers found.',
+      findings: [{ id: 'F1', severity: 'blocker', category: 'correctness', finding: 'Missing impl.' }],
+    };
+    const deps = makeDeps(findingsResult);
+    deps.policy = { ...deps.policy, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun({ id: 'run-1' });
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, sessionBudget },
+      { altitudes: ['layout', 'build'] },
+    );
+
+    expect(result.status).toBe('failed');
+    expect((result as { status: 'failed'; error: string }).error).toMatch(/budget exhausted/i);
+    // Runner must NOT have been called (budget rejected before provider call)
+    expect(deps.runner.run).not.toHaveBeenCalled();
   });
 });

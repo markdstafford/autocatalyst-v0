@@ -34,6 +34,7 @@ import {
 import { agentProfileSummary } from './routing-policy.js';
 import { allowedCategoriesForGate, gateLabel, type LayeredConvergenceGate } from './layered-convergence-policy.js';
 import { filterLayeredFindings } from './layered-finding-filter.js';
+import { type ModelSessionBudget } from '../journal/model-session-budget.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
@@ -67,6 +68,7 @@ export interface ReviewRunParams {
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
   captureSession?: AgentSessionCaptureFn;
   captureFeedback?: (exchange: ImplementationReviewExchange | GateReviewExchange, run: Run) => void;
+  sessionBudget?: ModelSessionBudget;
 }
 
 export class ImplementationReviewCoordinator {
@@ -401,7 +403,7 @@ export class ImplementationReviewCoordinator {
     gate: 'initial' | 'final' | LayeredConvergenceGate,
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
-    { run, artifact_path, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback }: ReviewRunParams,
+    { run, artifact_path, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback, sessionBudget }: ReviewRunParams,
     initialResult: ImplementationResult,
   ): Promise<ImplementationResult> {
     const implementation_result = initialResult;
@@ -503,6 +505,19 @@ export class ImplementationReviewCoordinator {
         : phase === 'initial'
           ? buildInitialReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext)
           : buildFinalReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext);
+
+      // Reserve model-session budget slot before critic call
+      if (sessionBudget) {
+        try {
+          await sessionBudget.reserve({ gate: String(gate), role: 'critic', round, passKind: phase === 'initial' ? 'initial' : 'final' });
+        } catch (err) {
+          this.deps.logger.warn(
+            { event: 'implementation.review.budget_exhausted', run_id: run.id, gate, role: 'critic', round, error: String(err) },
+            'Model-session budget exhausted before critic call',
+          );
+          return { status: 'failed', error: String(err) };
+        }
+      }
 
       // Run critic
       let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
@@ -720,6 +735,19 @@ export class ImplementationReviewCoordinator {
         captureSession,
         onAgentRequest,
       };
+
+      // Reserve model-session budget slot before proposer revision call
+      if (sessionBudget) {
+        try {
+          await sessionBudget.reserve({ gate: String(gate), role: 'proposer', round, passKind: phase === 'initial' ? 'initial' : 'final' });
+        } catch (err) {
+          this.deps.logger.warn(
+            { event: 'implementation.review.budget_exhausted', run_id: run.id, gate, role: 'proposer', round, error: String(err) },
+            'Model-session budget exhausted before proposer revision call',
+          );
+          return { status: 'failed', error: String(err) };
+        }
+      }
 
       let proposerResult: ImplementationResult;
       try {
