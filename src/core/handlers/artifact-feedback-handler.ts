@@ -109,7 +109,7 @@ export class ArtifactFeedbackHandler {
       const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
         ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
         : undefined;
-      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession }, { staleConvergedApiRemoved: staleApiRemoved });
+      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession });
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };

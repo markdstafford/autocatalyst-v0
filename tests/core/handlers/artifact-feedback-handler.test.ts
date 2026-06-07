@@ -108,7 +108,6 @@ describe('ArtifactFeedbackHandler', () => {
       undefined,
       expect.any(Function),
       expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
-      { staleConvergedApiRemoved: false },
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS-TYPED',
@@ -166,7 +165,6 @@ describe('ArtifactFeedbackHandler', () => {
       '# Current\n\n<span discussion-urls="discussion://disc-1">text</span>',
       expect.any(Function),
       expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
-      { staleConvergedApiRemoved: false },
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS001',
@@ -205,7 +203,6 @@ describe('ArtifactFeedbackHandler', () => {
       undefined,
       expect.any(Function),
       expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }),
-      { staleConvergedApiRemoved: false },
     );
     expect(deps.failRun).not.toHaveBeenCalled();
     expect(run.stage).toBe('reviewing_spec');
@@ -433,7 +430,7 @@ describe('ArtifactFeedbackHandler', () => {
       );
     });
 
-    it('passes staleConvergedApiRemoved: true to revise() when section was removed', async () => {
+    it('calls revise() without extra options when section was removed', async () => {
       const specWithApi = '# Feature Spec\n\n## Converged API\n\nOld API.\n';
       const { handler, deps } = makeHandler({
         readFile: vi.fn().mockResolvedValue(specWithApi),
@@ -452,11 +449,10 @@ describe('ArtifactFeedbackHandler', () => {
         undefined,
         expect.any(Function),
         expect.objectContaining({ run_id: 'run-001' }),
-        { staleConvergedApiRemoved: true },
       );
     });
 
-    it('does not warn and passes staleConvergedApiRemoved: false when no ## Converged API section', async () => {
+    it('does not warn and calls revise() when no ## Converged API section', async () => {
       const specWithoutApi = '# Feature Spec\n\nSome content.\n';
       const { handler, deps } = makeHandler({
         readFile: vi.fn().mockResolvedValue(specWithoutApi),
@@ -480,7 +476,6 @@ describe('ArtifactFeedbackHandler', () => {
         undefined,
         expect.any(Function),
         expect.objectContaining({ run_id: 'run-001' }),
-        { staleConvergedApiRemoved: false },
       );
     });
 
@@ -510,7 +505,6 @@ describe('ArtifactFeedbackHandler', () => {
         undefined,
         expect.any(Function),
         expect.objectContaining({ run_id: 'run-001' }),
-        { staleConvergedApiRemoved: false },
       );
     });
 
@@ -536,7 +530,6 @@ describe('ArtifactFeedbackHandler', () => {
         undefined,
         expect.any(Function),
         expect.objectContaining({ run_id: 'run-001' }),
-        { staleConvergedApiRemoved: false },
       );
     });
 

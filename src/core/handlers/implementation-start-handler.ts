@@ -22,7 +22,7 @@ export interface ImplementationStartDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
-  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview' | 'runLayeredImplementation'>;
+  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
   convergencePolicy?: ResolvedImplementationConvergencePolicy;
   journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
   budgetWriter?: BudgetWriter;
