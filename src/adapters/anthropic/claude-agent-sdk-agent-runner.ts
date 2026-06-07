@@ -28,7 +28,6 @@ import type {
 } from '../../types/ai.js';
 import { createLogger } from '../../core/logger.js';
 import { redactSecrets } from '../../core/journal/redaction.js';
-export { redactSecrets } from '../../core/journal/redaction.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 import { buildSandboxEnvironmentWithSummary, buildSandboxEnvironment } from '../sandbox-environment.js';
 import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy, type RequestLogOptions } from './anthropic-beta-header-filter-proxy.js';

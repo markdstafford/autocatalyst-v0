@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream';
 import { describe, it, expect, test, vi } from 'vitest';
-import { ClaudeAgentSdkAgentRunner, claudeSdkMessageDiagnostic, redactSecrets } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
+import { ClaudeAgentSdkAgentRunner, claudeSdkMessageDiagnostic } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
+import { redactSecrets } from '../../../src/core/journal/redaction.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
 import type { AgentProfile } from '../../../src/types/ai.js';
 import type { Counter, Histogram, Meter } from '@opentelemetry/api';
