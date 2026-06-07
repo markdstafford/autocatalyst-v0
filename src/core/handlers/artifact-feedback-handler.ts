@@ -1,5 +1,5 @@
 import type pino from 'pino';
-import type { ArtifactAuthoringAgent } from '../../types/ai.js';
+import type { ArtifactAuthoringAgent, AgentSessionCaptureFn } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { FeedbackSource } from '../../types/feedback-source.js';
 import type { ArtifactContentSource, ArtifactPublisher } from '../../types/publisher.js';
@@ -9,6 +9,7 @@ import { requireArtifactRefs } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { SpecReviewCoordinator } from '../ai/spec-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface ArtifactFeedbackDeps {
   artifactAuthoringAgent: Pick<ArtifactAuthoringAgent, 'revise'>;
@@ -22,6 +23,7 @@ export interface ArtifactFeedbackDeps {
   logger: Pick<pino.Logger, 'debug' | 'warn' | 'error' | 'info'>;
   branchGuard?: BranchGuard;
   specReviewCoordinator?: Pick<SpecReviewCoordinator, 'runSpecReview'>;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export type ArtifactFeedbackResult = { status: 'revised' } | { status: 'failed' };
@@ -70,7 +72,10 @@ export class ArtifactFeedbackHandler {
 
     let result;
     try {
-      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest });
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
+      result = await this.deps.artifactAuthoringAgent.revise(feedback, publisherComments, refs.local_path, run.workspace_path, pageMarkdown, onProgress, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession });
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };
@@ -101,6 +106,9 @@ export class ArtifactFeedbackHandler {
     // Spec review (feature_spec only, after branch guard, before publish)
     let reviewedPageContent = page_content;
     if (refs.artifact.kind === 'feature_spec' && this.deps.specReviewCoordinator) {
+      const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       const reviewResult = await this.deps.specReviewCoordinator.runSpecReview({
         run,
         artifact_path: refs.local_path,
@@ -114,6 +122,7 @@ export class ArtifactFeedbackHandler {
           );
         }),
         onAgentRequest,
+        captureSession: captureSessionForReview,
       });
 
       if (reviewResult.status !== 'complete') {

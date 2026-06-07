@@ -31,6 +31,8 @@ import type { ImplementationReviewCoordinator } from './ai/implementation-review
 import type { SpecReviewCoordinator } from './ai/spec-review-coordinator.js';
 import { clearAgentRequestContext, isAiActiveStage } from './run-ai-context.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
+import type { RunJournal } from './journal/run-journal.js';
+import type { AgentProfile } from '../types/ai.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
@@ -87,6 +89,7 @@ export interface OrchestratorDeps {
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
   autoPruneWorkspace?: boolean;
   workspacePruner?: import('./workspace-pruner.js').WorkspacePruner;
+  journal?: RunJournal;
 }
 
 interface OrchestratorOptions {
@@ -329,9 +332,12 @@ export class OrchestratorImpl implements Orchestrator {
       // Stage 1: classify raw message in new_thread context
       let stage1Intent: Intent = 'idea';
       if (this.deps.intentClassifier) {
+        const classifyTs = new Date().toISOString();
         try {
           stage1Intent = await this.deps.intentClassifier.classify(request.content, 'new_thread');
+          this.captureDirectSession(run, 'intent.classify', classifyTs, 'ok');
         } catch (err) {
+          this.captureDirectSession(run, 'intent.classify', classifyTs, 'failed');
           await this.handleClassificationUnavailable(run, request.conversation, err);
           return;
         }
@@ -358,7 +364,7 @@ export class OrchestratorImpl implements Orchestrator {
 
         // Post interim message immediately
         try {
-          await this.postMessage(request.conversation, `Looking up issue #${ref.number}…`);
+          await this.postMessage(request.conversation, `Looking up issue #${ref.number}…`, run);
         } catch (err) {
           this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post interim issue lookup message');
         }
@@ -403,9 +409,12 @@ export class OrchestratorImpl implements Orchestrator {
         const enrichedMessage = buildEnrichedClassificationMessage(request.content, issue);
         let intent: Intent = 'idea';
         if (this.deps.intentClassifier) {
+          const classifyTs2 = new Date().toISOString();
           try {
             intent = await this.deps.intentClassifier.classify(enrichedMessage, 'existing_issue');
+            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'ok');
           } catch (err) {
+            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'failed');
             await this.handleClassificationUnavailable(run, request.conversation, err);
             return;
           }
@@ -414,6 +423,14 @@ export class OrchestratorImpl implements Orchestrator {
             'Stage 2 intent classified for existing issue',
           );
         }
+
+        const stage2ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
+        void this.deps.journal?.captureInboundMessage(
+          run,
+          { content: request.content },
+          intent,
+          stage2ClassificationStatus,
+        ).catch(() => {});
 
         // Post Stage 2 intent-specific acknowledgement (best-effort) — no file_issues ack here
         if (intent !== 'ignore') {
@@ -425,7 +442,7 @@ export class OrchestratorImpl implements Orchestrator {
           };
           const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
           try {
-            await this.postMessage(request.conversation, intentMessage);
+            await this.postMessage(request.conversation, intentMessage, run);
           } catch (err) {
             this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post Stage 2 intent acknowledgement');
           }
@@ -458,6 +475,13 @@ export class OrchestratorImpl implements Orchestrator {
 
       // Single-stage path: all other intents from Stage 1
       const intent = stage1Intent;
+      const stage1ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
+      void this.deps.journal?.captureInboundMessage(
+        run,
+        { content: request.content },
+        intent,
+        stage1ClassificationStatus,
+      ).catch(() => {});
 
       // Post intent-specific acknowledgement (best-effort)
       if (intent !== 'ignore') {
@@ -470,7 +494,7 @@ export class OrchestratorImpl implements Orchestrator {
         };
         const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
         try {
-          await this.postMessage(request.conversation, intentMessage);
+          await this.postMessage(request.conversation, intentMessage, run);
         } catch (err) {
           this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post intent acknowledgement');
         }
@@ -520,14 +544,50 @@ export class OrchestratorImpl implements Orchestrator {
       let intent: Intent = 'feedback';
       if (this.deps.intentClassifier) {
         const context: ClassificationContext = routingStage as ClassificationContext;
+        const classifyTs3 = new Date().toISOString();
         try {
           intent = await this.deps.intentClassifier.classify(feedback.content, context);
+          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'ok');
         } catch (err) {
+          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'failed');
+          void this.deps.journal?.captureInboundMessage(
+            run,
+            { content: feedback.content },
+            null,
+            'failed',
+          ).catch(() => {});
           this.restoreStageAfterClassificationFailure(run, routingStage, err);
           await this.postError(feedback.conversation, CLASSIFICATION_UNAVAILABLE_MESSAGE);
           return;
         }
         this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent, stage: routingStage }, 'Intent classified');
+      }
+
+      const threadMsgClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
+      void this.deps.journal?.captureInboundMessage(
+        run,
+        { content: feedback.content },
+        intent,
+        threadMsgClassificationStatus,
+      ).catch(() => {});
+
+      // Capture feedback record for feedback-type intents
+      const FEEDBACK_INTENTS = new Set(['feedback', 'approval', 'impl_feedback', 'impl_input', 'pr_feedback']);
+      if (FEEDBACK_INTENTS.has(intent) && this.deps.journal) {
+        const feedbackTarget = (routingStage === 'reviewing_spec' || routingStage === 'awaiting_planning_input')
+          ? 'artifact' as const : 'implementation' as const;
+        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${feedback.origin?.message_id ?? 'unknown'}`;
+        void this.deps.journal.captureFeedback({
+          id: `${feedback.request_id}:${feedback.received_at ?? new Date().toISOString()}`,
+          run,
+          target: feedbackTarget,
+          author_principal: authorPrincipal,
+          text: feedback.content,
+          severity: 'info',
+          category: 'human_feedback',
+          disposition: 'open',
+          received_at: feedback.received_at,
+        }).catch(() => {});
       }
 
       const handler = this.handlerRegistry.resolve({
@@ -563,7 +623,7 @@ export class OrchestratorImpl implements Orchestrator {
       issueFiler: this.deps.issueFiler,
       channelRepoMap: this.deps.channelRepoMap,
       reacjiComplete: this.deps.reacjiComplete,
-      postMessage: (conversation, text) => this.postMessage(conversation, text),
+      postMessage: (conversation, text, run) => this.postMessage(conversation, text, run),
       postError: (conversation, text) => this.postError(conversation, text),
       transition: (targetRun, stage) => this.transition(targetRun, stage),
       failRun: (targetRun, conversation, error) => this.failRun(targetRun, conversation, error),
@@ -576,6 +636,7 @@ export class OrchestratorImpl implements Orchestrator {
       validatePlanPath: this.deps.validatePlanPath,
       autoPruneWorkspace: this.deps.autoPruneWorkspace,
       workspacePruner: this.deps.workspacePruner,
+      journal: this.deps.journal,
     });
   }
 
@@ -596,6 +657,7 @@ export class OrchestratorImpl implements Orchestrator {
       clearAgentRequestContext(run);
     }
     run.updated_at = new Date().toISOString();
+    void this.deps.journal?.captureRunEvent(run, 'transition', from, stage).catch(() => {});
     this.logger.info({ event: 'run.stage_transition', run_id: run.id, request_id: run.request_id, from_stage: from, to_stage: stage }, 'Stage transition');
     this._appendRunLog(run.request_id, `[${new Date().toISOString()}] Stage: ${from} → ${stage}`);
     this._persistRuns();
@@ -654,7 +716,7 @@ export class OrchestratorImpl implements Orchestrator {
     const message = "Server restarted while this was running. The run has been marked as failed. Reply in this thread to try again.";
     for (const run of runs) {
       if (!run.conversation) continue;
-      this.postMessage(run.conversation, message).catch(err => {
+      this.postMessage(run.conversation, message, run).catch(err => {
         this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post restart notification');
       });
     }
@@ -684,6 +746,7 @@ export class OrchestratorImpl implements Orchestrator {
     // The event loop is sequential, so a second new_request for the same request_id
     // would not arrive until the first is fully processed.
     this.runs.set(request.id, run);
+    void this.deps.journal?.captureRunEvent(run, 'created').catch(() => {});
     this._persistRuns();
     this.logger.info({ event: 'run.created', run_id: run.id, request_id: request.id }, 'Run created');
     return run;
@@ -695,12 +758,15 @@ export class OrchestratorImpl implements Orchestrator {
     await this.postError(conversation, `Sorry, something went wrong: ${String(error)}`);
   }
 
-  private async postMessage(conversation: ConversationRef, text: string): Promise<void> {
+  private async postMessage(conversation: ConversationRef, text: string, run?: Run): Promise<void> {
     if (this.deps.postMessage) {
       await this.deps.postMessage(conversation, text);
-      return;
+    } else {
+      await this.deps.adapter.reply(conversation, text);
     }
-    await this.deps.adapter.reply(conversation, text);
+    if (run && this.deps.journal) {
+      void this.deps.journal.captureOutboundMessage(run, text).catch(() => {});
+    }
   }
 
   private async postError(conversation: ConversationRef, text: string): Promise<void> {
@@ -747,6 +813,41 @@ export class OrchestratorImpl implements Orchestrator {
       'Run stage overridden via operator command',
     );
     return 'updated';
+  }
+
+  private captureDirectSession(
+    run: Run,
+    task: string,
+    ts_start: string,
+    outcome: 'ok' | 'failed',
+    profile?: AgentProfile | null,
+  ): void {
+    if (!this.deps.journal) return;
+    const ts_end = new Date().toISOString();
+    const providerName = profile?.provider ?? 'anthropic_direct';
+    const runnerName: 'anthropic_direct' | 'openai_direct' = providerName === 'openai_direct' ? 'openai_direct' : 'anthropic_direct';
+    void this.deps.journal.captureSession({
+      run,
+      ts_start,
+      ts_end,
+      phase: run.stage,
+      step: task,
+      round: 1,
+      model: {
+        provider: providerName,
+        name: profile?.model ?? null,
+      },
+      inference: {
+        effort: profile?.effort ?? null,
+        thinking: profile?.thinking ?? null,
+      },
+      tokens: null,
+      assistant_turns: null,
+      tool_calls: null,
+      tool_results: null,
+      outcome,
+      runner: runnerName,
+    }).catch(() => {});
   }
 
   private async reactToRunMessage(run: Run, reaction: string): Promise<void> {

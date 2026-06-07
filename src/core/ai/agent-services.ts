@@ -46,6 +46,32 @@ import type { ArtifactCommentAnchorCodec } from '../../types/publisher.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
+function emitSessionRecord(
+  telemetry: AgentServiceTelemetry | undefined,
+  profile: AgentProfile,
+  route: AgentRoute,
+  ts_start: string,
+  outcome: 'ok' | 'failed' | 'incomplete',
+  drainSummary: AgentDrainSummary | undefined,
+): void {
+  if (!telemetry?.captureSession) return;
+  const runner = profile.provider === 'openai_agent_sdk' ? 'openai_agent' : 'anthropic_agent';
+  telemetry.captureSession({
+    phase: telemetry.phase ?? null,
+    step: route.task,
+    ts_start,
+    ts_end: new Date().toISOString(),
+    model: { provider: profile.provider, name: profile.model ?? null },
+    inference: { effort: profile.effort ?? null, thinking: profile.thinking ?? null },
+    tokens: drainSummary?.terminal_usage ?? null,
+    assistant_turns: drainSummary?.assistant_turn_count ?? null,
+    tool_calls: drainSummary?.tool_call_count ?? null,
+    tool_results: drainSummary?.tool_result_count ?? null,
+    outcome,
+    runner,
+  });
+}
+
 function notifyAgentRequest(
   telemetry: AgentServiceTelemetry | undefined,
   profile: AgentProfile,
@@ -114,7 +140,9 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
           }
         : onProgress;
 
+    const ts_start = new Date().toISOString();
     let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
     try {
       await ensureResultDir(createResultPath);
       drainSummary = await drainAgentRunner(
@@ -137,12 +165,15 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
+      sessionOutcome = 'failed';
       this.logger.error(
         { event: 'artifact.agent_failed', request_id: request.id, error: String(err) },
         'Agent exited with error during artifact creation',
       );
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
       throw new Error(`Artifact creation failed: ${String(err)}`);
     }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
 
     const content = await validateRequiredResultFile({
       readFileFn: this.readFileFn,
@@ -208,7 +239,9 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
           }
         : onProgress;
 
+    const ts_start = new Date().toISOString();
     let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
     try {
       await ensureResultDir(reviseResultPath);
       drainSummary = await drainAgentRunner(
@@ -231,12 +264,15 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
+      sessionOutcome = 'failed';
       this.logger.error(
         { event: 'artifact.agent_failed', request_id: feedback.request_id, error: String(err) },
         'Agent exited with error during artifact revision',
       );
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
       throw new Error(`Artifact revision failed: ${String(err)}`);
     }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
 
     const content = await validateRequiredResultFile({
       readFileFn: this.readFileFn,
@@ -291,7 +327,9 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
           }
         : onProgress;
 
+    const ts_start = new Date().toISOString();
     let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
     try {
       await ensureResultDir(resultPath);
       drainSummary = await drainAgentRunner(
@@ -314,8 +352,11 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
+      sessionOutcome = 'failed';
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
       return { status: 'failed', responses: [], error: `Spec review author response failed: ${String(err)}` };
     }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
 
     const content = await validateRequiredResultFile({
       readFileFn: this.readFileFn,
@@ -424,7 +465,9 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
           }
         : onProgress;
 
+    const ts_start = new Date().toISOString();
     let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
     try {
       await ensureResultDir(resultFilePath);
       drainSummary = await drainAgentRunner(
@@ -447,7 +490,9 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
+      sessionOutcome = 'failed';
       this.logger.error({ event: 'impl.agent_failed', error: String(err) }, 'Agent exited with error during implementation');
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
       const msg = String(err);
       if (msg.includes('exceeded') && msg.includes('output token')) {
         throw new Error(
@@ -457,6 +502,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       }
       throw new Error(`Implementation failed: ${msg}`);
     }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
 
     const content = await validateRequiredResultFile({
       readFileFn: this.readFileFn,
@@ -515,7 +561,9 @@ export class AgentRunnerImplementationPlanningAgent implements ImplementationPla
           }
         : onProgress;
 
+    const ts_start = new Date().toISOString();
     let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
     try {
       await ensureResultDir(resultFilePath);
       drainSummary = await drainAgentRunner(
@@ -538,9 +586,12 @@ export class AgentRunnerImplementationPlanningAgent implements ImplementationPla
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
+      sessionOutcome = 'failed';
       this.logger.error({ event: 'planning.agent_failed', error: String(err) }, 'Agent exited with error during implementation planning');
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
       throw new Error(`Implementation planning failed: ${String(err)}`);
     }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
 
     const content = await validateRequiredResultFile({
       readFileFn: this.readFileFn,
@@ -583,7 +634,9 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
     const profile = this.routingPolicy.resolve(route);
     notifyAgentRequest(telemetry, profile, route);
 
+    const ts_start = new Date().toISOString();
     let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
     try {
       await ensureResultDir(resultPath);
       drainSummary = await drainAgentRunner(
@@ -606,9 +659,12 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
+      sessionOutcome = 'failed';
       this.logger.error({ event: 'question.agent_failed', error: String(err), ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) }, 'Agent exited with error during question answering');
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
       throw new Error(`Agent question answering failed: ${String(err)}`);
     }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
 
     const content = await validateRequiredResultFile({
       readFileFn: this.readFileFn,
@@ -664,7 +720,9 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
           }
         : onProgress;
 
+    const ts_start = new Date().toISOString();
     let drainSummary: AgentDrainSummary | undefined;
+    let sessionOutcome: 'ok' | 'failed' | 'incomplete' = 'ok';
     try {
       await ensureResultDir(resultPath);
       drainSummary = await drainAgentRunner(
@@ -687,12 +745,15 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
         { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
+      sessionOutcome = 'failed';
       this.logger.error(
         { event: 'filing.agent_failed', request_id: request.id, error: String(err) },
         'Agent exited with error during issue triage',
       );
+      emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
       throw new Error(`Issue triage failed: ${String(err)}`);
     }
+    emitSessionRecord(telemetry, profile, route, ts_start, sessionOutcome, drainSummary);
 
     const content = await validateRequiredResultFile({
       readFileFn: this.readFileFn,
@@ -768,6 +829,7 @@ export async function drainAgentRunner(
   let tool_call_count = 0;
   let tool_result_count = 0;
   let latestDiagnostics: AgentDrainSummary['diagnostics'];
+  let latestTerminalUsage: AgentDrainSummary['terminal_usage'];
 
   const telCtx = {
     ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
@@ -780,9 +842,11 @@ export async function drainAgentRunner(
     for await (const event of events) {
       event_count++;
 
-      // Capture diagnostics propagated from terminal runner events
+      // Capture diagnostics and terminal_usage propagated from terminal runner events
       const eventDiag = (event as { diagnostics?: AgentDrainSummary['diagnostics'] }).diagnostics;
       if (eventDiag) latestDiagnostics = eventDiag;
+      const eventTerminalUsage = (event as { terminal_usage?: AgentDrainSummary['terminal_usage'] }).terminal_usage;
+      if (eventTerminalUsage !== undefined) latestTerminalUsage = eventTerminalUsage;
 
       const content = assistantContent(event);
       if (content) {
@@ -832,6 +896,7 @@ export async function drainAgentRunner(
     tool_call_count,
     tool_result_count,
     elapsed_ms,
+    ...(latestTerminalUsage !== undefined ? { terminal_usage: latestTerminalUsage } : {}),
     ...(latestDiagnostics ? { diagnostics: latestDiagnostics } : {}),
   };
 

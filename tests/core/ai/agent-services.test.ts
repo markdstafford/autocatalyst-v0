@@ -950,6 +950,52 @@ describe('drainAgentRunner summary', () => {
     const parsed = lines.map(l => JSON.parse(l));
     expect(parsed.find(l => l.event === 'agent.drain_failed')).toBeDefined();
   });
+
+  it('captures terminal_usage from result event with usage', async () => {
+    const dest = new PassThrough();
+    dest.on('data', () => {});
+
+    async function* eventsWithUsage(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'assistant', content: [{ type: 'text', text: 'done' }] };
+      yield { type: 'result', terminal_usage: { input: 100, output: 50, cache_read: 10, cache_write: 20 } } as AgentRunEvent;
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    const summary = await drainAgentRunner(eventsWithUsage(), undefined, logger, 'test-phase');
+    dest.end();
+
+    expect(summary.terminal_usage).toEqual({ input: 100, output: 50, cache_read: 10, cache_write: 20 });
+  });
+
+  it('sets terminal_usage to null when result event has null terminal_usage', async () => {
+    const dest = new PassThrough();
+    dest.on('data', () => {});
+
+    async function* eventsWithNullUsage(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'result', terminal_usage: null } as AgentRunEvent;
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    const summary = await drainAgentRunner(eventsWithNullUsage(), undefined, logger, 'test-phase');
+    dest.end();
+
+    expect(summary.terminal_usage).toBeNull();
+  });
+
+  it('leaves terminal_usage undefined when no result event is present', async () => {
+    const dest = new PassThrough();
+    dest.on('data', () => {});
+
+    async function* eventsWithoutResult(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'assistant', content: [{ type: 'text', text: 'done' }] };
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    const summary = await drainAgentRunner(eventsWithoutResult(), undefined, logger, 'test-phase');
+    dest.end();
+
+    expect(summary.terminal_usage).toBeUndefined();
+  });
 });
 
 describe('validateRequiredResultFile', () => {
@@ -1521,6 +1567,98 @@ describe('AgentServiceTelemetry onAgentRequest callback', () => {
       // Only the initial call, no heartbeat
       expect(callbacks).toHaveLength(1);
       expect(callbacks[0].is_heartbeat).toBeFalsy();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('AgentServiceTelemetry captureSession callback', () => {
+  test('artifact.create calls captureSession after drain with ok outcome', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-capture-create-'));
+    try {
+      const captures: Array<{ step: string; outcome: string; runner: string }> = [];
+
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-test.md') }), 'utf8');
+      });
+
+      const captureSession = vi.fn((data: { step: string; outcome: string; runner: string }) => {
+        captures.push(data);
+      });
+
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+      await service.create(makeRequest(), workspace, undefined, 'idea', { captureSession });
+
+      expect(captureSession).toHaveBeenCalledOnce();
+      expect(captures[0].step).toBe('artifact.create');
+      expect(captures[0].outcome).toBe('ok');
+      expect(captures[0].runner).toBe('anthropic_agent');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('artifact.create calls captureSession with failed outcome when drain throws', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-capture-fail-'));
+    try {
+      const captures: Array<{ step: string; outcome: string }> = [];
+
+      const runner: import('../../../src/types/ai.js').AgentRunner = {
+        async *run() {
+          throw new Error('agent crashed');
+          // eslint-disable-next-line no-unreachable
+          yield { type: 'assistant', content: [] };
+        },
+      };
+
+      const captureSession = vi.fn((data: { step: string; outcome: string }) => {
+        captures.push(data);
+      });
+
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+      await expect(
+        service.create(makeRequest(), workspace, undefined, 'idea', { captureSession }),
+      ).rejects.toThrow();
+
+      expect(captureSession).toHaveBeenCalledOnce();
+      expect(captures[0].step).toBe('artifact.create');
+      expect(captures[0].outcome).toBe('failed');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation.run calls captureSession with model info', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-capture-impl-'));
+    try {
+      const captures: Array<{ step: string; model: { provider: string; name: string | null } }> = [];
+      const specPath = join(workspace, 'spec.md');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(specPath, '# Spec', 'utf8');
+
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'done', review_summary: { changes: ['c'], confirm: ['v'] }, testing_steps: ['cd /tmp'], resolved_feedback_items: [] }), 'utf8');
+      });
+
+      const captureSession = vi.fn((data: { step: string; model: { provider: string; name: string | null } }) => {
+        captures.push(data);
+      });
+
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+      await service.implement(specPath, workspace, undefined, undefined, { captureSession });
+
+      expect(captureSession).toHaveBeenCalledOnce();
+      expect(captures[0].step).toBe('implementation.run');
+      expect(captures[0].model.name).toBe('claude-sonnet-4-5');
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

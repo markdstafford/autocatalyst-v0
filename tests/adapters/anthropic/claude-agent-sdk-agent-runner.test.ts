@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream';
 import { describe, it, expect, test, vi } from 'vitest';
-import { ClaudeAgentSdkAgentRunner, claudeSdkMessageDiagnostic, redactSecrets } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
+import { ClaudeAgentSdkAgentRunner, claudeSdkMessageDiagnostic } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
+import { redactSecrets } from '../../../src/core/journal/redaction.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
 import type { AgentProfile } from '../../../src/types/ai.js';
 import type { Counter, Histogram, Meter } from '@opentelemetry/api';
@@ -627,6 +628,57 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     expect(stderrLog!['stderr_excerpt']).not.toContain('sk-ant-secret123');
     expect(stderrLog!['stderr_excerpt']).not.toContain('ghp_R862tsYUn7O33OQq');
     expect(stderrLog!['stderr_excerpt']).toContain('[REDACTED]');
+  });
+
+  test('result event includes terminal_usage normalized from SDK usage with cache fields', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 20, cache_read_input_tokens: 10 },
+      };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+
+    const events = await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6', effort: 'high' },
+    }));
+
+    const resultEvent = events.find(e => e.type === 'result') as Record<string, unknown> | undefined;
+    expect(resultEvent).toBeDefined();
+    expect(resultEvent!['terminal_usage']).toEqual({
+      input: 100,
+      output: 50,
+      cache_read: 10,
+      cache_write: 20,
+    });
+  });
+
+  test('result event includes terminal_usage with zeros when cache fields are absent', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 42, output_tokens: 17 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+
+    const events = await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6', effort: 'high' },
+    }));
+
+    const resultEvent = events.find(e => e.type === 'result') as Record<string, unknown> | undefined;
+    expect(resultEvent).toBeDefined();
+    expect(resultEvent!['terminal_usage']).toEqual({
+      input: 42,
+      output: 17,
+      cache_read: 0,
+      cache_write: 0,
+    });
   });
 
   test('does not log stderr when SDK exits successfully', async () => {

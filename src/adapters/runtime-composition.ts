@@ -20,6 +20,9 @@ import { WorkspaceManagerImpl } from '../core/workspace-manager.js';
 import { SlackCanvasPublisher } from './slack/canvas-publisher.js';
 import type { ArtifactCommentAnchorCodec, ArtifactContentSource, ArtifactPublisher } from '../types/publisher.js';
 import { FileRunStore } from '../core/run-store.js';
+import { JsonlJournalWriter } from '../core/journal/jsonl-writer.js';
+import { RunJournal } from '../core/journal/run-journal.js';
+import { NoopJournalWriter } from '../types/journal.js';
 import { NotionClientImpl } from './notion/notion-client.js';
 import { NotionPublisher } from './notion/notion-publisher.js';
 import { NotionCommentAnchorCodec } from './notion/markdown-diff.js';
@@ -152,12 +155,24 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   const channelRepoMap = channelRegistryToRepoMap(channelRegistry);
 
   const workspaceManager = new WorkspaceManagerImpl();
+
+  let journal: RunJournal;
+  if (normalizedConfig.journal_enabled) {
+    logger.info({ event: 'journal.writer_started' }, 'Journal enabled');
+    const writer = new JsonlJournalWriter(workspaceRoot);
+    journal = new RunJournal(writer);
+  } else {
+    logger.info({ event: 'journal.disabled' }, 'Journal disabled');
+    journal = new RunJournal(new NoopJournalWriter());
+  }
+
   const runStore = new FileRunStore(workspaceRoot, {
     legacyConversationFields: {
       provider: 'slack',
       channelField: 'channel_id',
       conversationField: 'thread_ts',
     },
+    journal,
   });
   const implementer = new AgentRunnerImplementationAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
   const implementationPlanner = new AgentRunnerImplementationPlanningAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
@@ -231,6 +246,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     isConnected: () => adapter.isConnected(),
     meter: options.meter,
     onStop: () => agentRunner.close?.() ?? Promise.resolve(),
+    journal,
   });
 }
 

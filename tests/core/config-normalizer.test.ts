@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeWorkflowConfig } from '../../src/core/config-normalizer.js';
-import type { WorkflowConfig } from '../../src/types/config.js';
+import type { WorkflowConfig, JournalConfig } from '../../src/types/config.js';
+
+function configWithJournal(journal?: JournalConfig): WorkflowConfig {
+  return journal !== undefined ? { journal } as WorkflowConfig : {} as WorkflowConfig;
+}
+
+describe('normalizeWorkflowConfig journal defaults', () => {
+  it('defaults missing journal to enabled', () => {
+    expect(normalizeWorkflowConfig(configWithJournal()).journal_enabled).toBe(true);
+  });
+
+  it('defaults missing journal.enabled to enabled', () => {
+    expect(normalizeWorkflowConfig(configWithJournal({})).journal_enabled).toBe(true);
+  });
+
+  it('preserves explicit journal.enabled false', () => {
+    expect(normalizeWorkflowConfig(configWithJournal({ enabled: false })).journal_enabled).toBe(false);
+  });
+});
 
 describe('normalizeWorkflowConfig', () => {
   it('does not normalize provider-specific legacy top-level config', () => {

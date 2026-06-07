@@ -24,6 +24,7 @@ export interface NormalizedWorkflowConfig {
   channels: NormalizedChannelConfig[];
   publishers: NormalizedPublisherConfig[];
   artifact_policies: Record<ArtifactKind, ArtifactLifecyclePolicy>;
+  journal_enabled: boolean;
 }
 
 export function normalizeWorkflowConfig(config: WorkflowConfig): NormalizedWorkflowConfig {
@@ -36,6 +37,7 @@ export function normalizeWorkflowConfig(config: WorkflowConfig): NormalizedWorkf
     channels,
     publishers,
     artifact_policies: normalizeArtifactPolicies(config.artifact_policies),
+    journal_enabled: config.journal?.enabled ?? true,
   };
 }
 

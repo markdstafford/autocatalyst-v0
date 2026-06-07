@@ -1,11 +1,12 @@
 import type pino from 'pino';
-import type { ImplementationPlanningAgent } from '../../types/ai.js';
+import type { ImplementationPlanningAgent, AgentSessionCaptureFn } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { ConversationRef } from '../../types/channel.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import { requireArtifactRefs } from '../run-refs.js';
 import { validateImplementationPlanPath } from '../plan-path-validator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface PlanningHandlerDeps {
   planner: Pick<ImplementationPlanningAgent, 'plan'>;
@@ -15,6 +16,7 @@ export interface PlanningHandlerDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export type PlanningResult =
@@ -46,11 +48,14 @@ export class PlanningHandler {
 
     let result;
     try {
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       result = await this.deps.planner.plan(
         refs.local_path,
         run.workspace_path,
         onProgress,
-        { run_id: run.id, request_id: run.request_id, onAgentRequest },
+        { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession },
         additionalContext,
       );
     } catch (err) {

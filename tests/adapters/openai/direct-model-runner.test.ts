@@ -34,7 +34,7 @@ describe('OpenAIDirectModelRunner', () => {
       messages: [{ role: 'user', content: 'classify this' }],
     });
 
-    expect(result).toEqual({ text: 'question', raw: makeResponse('question') });
+    expect(result).toEqual({ text: 'question', raw: makeResponse('question'), usage: null, runner: 'openai_direct' });
     expect(createFn).toHaveBeenCalledWith({
       model: 'gpt-4o-mini',
       max_completion_tokens: 20,
@@ -112,6 +112,59 @@ describe('OpenAIDirectModelRunner', () => {
       max_completion_tokens: 1024,
       messages: [{ role: 'user', content: 'classify' }],
     });
+  });
+
+  test('returns normalized usage when provider returns usage data', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: 'answer' } }],
+      usage: { prompt_tokens: 8, completion_tokens: 3 },
+    });
+    const runner = new OpenAIDirectModelRunner('test-key', undefined, { createFn });
+
+    const result = await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'gpt', provider: 'openai', model: 'gpt-4o-mini', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+
+    expect(result.usage).toEqual({ input: 8, output: 3, cache_read: 0, cache_write: 0 });
+    expect(result.runner).toBe('openai_direct');
+  });
+
+  test('returns usage: null when provider returns no usage', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: 'answer' } }],
+    });
+    const runner = new OpenAIDirectModelRunner('test-key', undefined, { createFn });
+
+    const result = await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'gpt', provider: 'openai', model: 'gpt-4o-mini', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+
+    expect(result.usage).toBeNull();
+    expect(result.runner).toBe('openai_direct');
+  });
+
+  test('maps cached_tokens from prompt_tokens_details to cache_read', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: 'answer' } }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        prompt_tokens_details: { cached_tokens: 60 },
+      },
+    });
+    const runner = new OpenAIDirectModelRunner('test-key', undefined, { createFn });
+
+    const result = await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'gpt', provider: 'openai', model: 'gpt-4o-mini', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+
+    expect(result.usage).toEqual({ input: 100, output: 50, cache_read: 60, cache_write: 0 });
   });
 
   test('emits model.run log event with all fields on success', async () => {

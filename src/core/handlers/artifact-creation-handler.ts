@@ -11,6 +11,8 @@ import { channelKey, type ConversationRef } from '../../types/channel.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { SpecReviewCoordinator } from '../ai/spec-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
+import type { AgentSessionCaptureFn } from '../../types/ai.js';
 
 type ArtifactCreationIntent = Extract<RequestIntent, 'idea' | 'bug' | 'chore'>;
 
@@ -26,6 +28,7 @@ export interface ArtifactCreationDeps {
   logger: Pick<pino.Logger, 'warn' | 'error' | 'info'>;
   branchGuard?: BranchGuard;
   specReviewCoordinator?: Pick<SpecReviewCoordinator, 'runSpecReview'>;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export class ArtifactCreationHandler {
@@ -66,9 +69,12 @@ export class ArtifactCreationHandler {
 
     let local_path: string;
     try {
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       const result = intent === 'idea'
-        ? await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, undefined, { run_id: run.id, request_id: run.request_id, onAgentRequest })
-        : await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, intent, { run_id: run.id, request_id: run.request_id, onAgentRequest });
+        ? await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, undefined, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession })
+        : await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, intent, { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession });
       local_path = result.artifact_path;
       this.setArtifactDraft(run, artifactKindForIntent(intent)!, local_path);
       if (intent !== 'idea' && result.existing_issue !== undefined) {
@@ -94,6 +100,9 @@ export class ArtifactCreationHandler {
 
     // Spec review (idea intent only, after branch guard, before publish)
     if (intent === 'idea' && this.deps.specReviewCoordinator && run.artifact) {
+      const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       const reviewResult = await this.deps.specReviewCoordinator.runSpecReview({
         run,
         artifact_path: local_path,
@@ -106,6 +115,7 @@ export class ArtifactCreationHandler {
           );
         }),
         onAgentRequest,
+        captureSession: captureSessionForReview,
       });
 
       if (reviewResult.status !== 'complete') {

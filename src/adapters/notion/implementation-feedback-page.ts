@@ -1,5 +1,6 @@
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
+import { redactSecrets } from '../../core/journal/redaction.js';
 import type { NotionClient } from './notion-client.js';
 import type {
   FeedbackItem,
@@ -16,11 +17,6 @@ export type {
   ImplementationReviewStatus,
   PublishedImplementationReview,
 } from '../../types/impl-feedback-page.js';
-
-function redactSecrets(text: string): string {
-  // Redact common API key patterns starting with sk-
-  return text.replace(/\bsk-[A-Za-z0-9]{8,}\b/g, '[REDACTED]');
-}
 
 function renderAiReviewMarkdown(exchanges: ImplementationReviewExchange[]): string {
   const lines: string[] = [];

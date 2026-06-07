@@ -4,9 +4,12 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type pino from 'pino';
 import type {
+  AgentDrainSummary,
   AgentInvocationMetadata,
+  AgentProfile,
   AgentRunner,
   AgentRoutingPolicy,
+  AgentSessionCaptureFn,
   ArtifactAuthoringAgent,
   SpecReviewAuthorResponseResult,
   SpecReviewFinding,
@@ -42,6 +45,7 @@ export interface SpecReviewRunParams {
   current_page_markdown?: string;
   onProgress?: (message: string) => Promise<void>;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
+  captureSession?: AgentSessionCaptureFn;
 }
 
 export interface SpecReviewRunResult {
@@ -61,7 +65,7 @@ export class SpecReviewCoordinator {
   }
 
   async runSpecReview(params: SpecReviewRunParams): Promise<SpecReviewRunResult> {
-    const { run, artifact_path, working_directory, artifact_kind, current_page_markdown, onProgress, onAgentRequest } = params;
+    const { run, artifact_path, working_directory, artifact_kind, current_page_markdown, onProgress, onAgentRequest, captureSession } = params;
 
     const reviewProfile = this.deps.routingPolicy.resolveOptional({ task: 'spec.review', artifact_kind });
 
@@ -113,8 +117,10 @@ export class SpecReviewCoordinator {
 
     let reviewResultContent: string;
     let reviewResult: SpecReviewResult;
+    let drainSummary: AgentDrainSummary | undefined;
+    const ts_start = new Date().toISOString();
     try {
-      await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.deps.runner.run({
           route: { task: 'spec.review', artifact_kind },
           profile: reviewProfile,
@@ -135,7 +141,9 @@ export class SpecReviewCoordinator {
       );
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
       reviewResult = parseSpecReviewResult(reviewResultContent, reviewResultPath);
+      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'ok', drainSummary);
     } catch (err) {
+      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'failed', drainSummary);
       return this.handleReviewFailure(run, artifact_path, String(err), onProgress);
     }
 
@@ -238,6 +246,31 @@ export class SpecReviewCoordinator {
       page_content: authorResponse.page_content,
       summary: reviewResult.summary,
     };
+  }
+
+  private emitSessionRecord(
+    captureSession: AgentSessionCaptureFn | undefined,
+    profile: AgentProfile,
+    ts_start: string,
+    outcome: 'ok' | 'failed',
+    drainSummary: AgentDrainSummary | undefined,
+  ): void {
+    if (!captureSession) return;
+    const runner = profile.provider === 'openai_agent_sdk' ? 'openai_agent' : 'anthropic_agent';
+    captureSession({
+      phase: 'spec_review',
+      step: 'spec.review',
+      ts_start,
+      ts_end: new Date().toISOString(),
+      model: { provider: profile.provider, name: profile.model ?? null },
+      inference: { effort: profile.effort ?? null, thinking: profile.thinking ?? null },
+      tokens: drainSummary?.terminal_usage ?? null,
+      assistant_turns: drainSummary?.assistant_turn_count ?? null,
+      tool_calls: drainSummary?.tool_call_count ?? null,
+      tool_results: drainSummary?.tool_result_count ?? null,
+      outcome,
+      runner,
+    });
   }
 
   private handleReviewFailure(

@@ -4,12 +4,21 @@ import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { performance } from 'node:perf_hooks';
 import { createLogger } from '../../core/logger.js';
 import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner } from '../../types/ai.js';
+import type { NormalizedTokenUsage } from '../../types/journal.js';
 
 export type AnthropicCreateFn = (params: {
   model: string;
   max_tokens: number;
   messages: Array<{ role: 'user'; content: string }>;
-}) => Promise<{ content: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>;
+}) => Promise<{
+  content: Array<{ type: string; text?: string }>;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+}>;
 
 export interface AnthropicDirectModelRunnerOptions {
   createFn?: AnthropicCreateFn;
@@ -28,7 +37,7 @@ export class AnthropicDirectModelRunner implements DirectModelRunner {
       this.createFn = options.createFn;
     } else {
       const client = new Anthropic({ apiKey });
-      this.createFn = params => client.messages.create(params) as Promise<{ content: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>;
+      this.createFn = params => client.messages.create(params) as Promise<{ content: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }>;
     }
     this.defaultModel = options?.defaultModel;
     this.logger = createLogger('anthropic-direct-model-runner', {
@@ -62,9 +71,19 @@ export class AnthropicDirectModelRunner implements DirectModelRunner {
         },
         'Model run completed',
       );
+      const normalizedUsage: NormalizedTokenUsage | null = raw.usage
+        ? {
+            input: raw.usage.input_tokens ?? 0,
+            output: raw.usage.output_tokens ?? 0,
+            cache_read: raw.usage.cache_read_input_tokens ?? 0,
+            cache_write: raw.usage.cache_creation_input_tokens ?? 0,
+          }
+        : null;
       return {
         text: raw.content.find(block => block.type === 'text')?.text ?? '',
         raw,
+        usage: normalizedUsage,
+        runner: 'anthropic_direct',
       };
     } catch (err) {
       this.logger.error(

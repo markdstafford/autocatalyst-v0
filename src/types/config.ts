@@ -104,6 +104,10 @@ export interface SandboxConfig {
   env_tokens?: string[];
 }
 
+export interface JournalConfig {
+  enabled?: boolean;
+}
+
 export interface WorkflowConfig {
   polling?: {
     interval_ms?: number;
@@ -121,6 +125,7 @@ export interface WorkflowConfig {
   implementation_review?: ImplementationReviewPolicy;
   spec_review?: SpecReviewPolicy;
   sandbox?: SandboxConfig;
+  journal?: JournalConfig;
   [key: string]: unknown;
 }
 

@@ -27,6 +27,7 @@ import type {
   AgentThinking,
 } from '../../types/ai.js';
 import { createLogger } from '../../core/logger.js';
+import { redactSecrets } from '../../core/journal/redaction.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 import { buildSandboxEnvironmentWithSummary, buildSandboxEnvironment } from '../sandbox-environment.js';
 import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy, type RequestLogOptions } from './anthropic-beta-header-filter-proxy.js';
@@ -34,27 +35,6 @@ import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProx
 type QueryFn = typeof _query;
 
 const MAX_STDERR_LINES = 50;
-
-const SECRET_PATTERNS = [
-  /(?:api[_-]?key|secret|password|credential)\s*[=:]\s*\S+/gi,
-  /ghp_[A-Za-z0-9_]+/g,
-  /github_pat_[A-Za-z0-9_]+/g,
-  /gho_[A-Za-z0-9_]+/g,
-  /ghs_[A-Za-z0-9_]+/g,
-  /sk-[A-Za-z0-9_-]+/g,
-  /xox[bpras]-[A-Za-z0-9-]+/g,
-  /xapp-[A-Za-z0-9-]+/g,
-  /Authorization:\s*Bearer\s+\S+/gi,
-  /ANTHROPIC_CUSTOM_HEADERS[^=]*=\s*api-key:\s*\S+/gi,
-];
-
-export function redactSecrets(text: string): string {
-  let redacted = text;
-  for (const pattern of SECRET_PATTERNS) {
-    redacted = redacted.replace(pattern, '[REDACTED]');
-  }
-  return redacted;
-}
 
 export interface ClaudeSdkMessageDiagnostic {
   sdk_message_type: string;
@@ -241,7 +221,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     let assistantTurnCount = 0;
     let seenTerminalResult = false;
     let terminalDiagnostics: { stderr_excerpt_redacted?: string } | undefined;
-    let terminalUsage: { input_tokens: number; output_tokens: number } | undefined;
+    let terminalUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined;
     let pendingToolResultCount = 0;
 
     const telemetry = request.telemetry ?? {};
@@ -269,7 +249,12 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         if ((message as SDKMessage).type === 'result') {
           seenTerminalResult = true;
           const result = message as unknown as SDKResultMessage;
-          terminalUsage = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens };
+          terminalUsage = {
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+            cache_creation_input_tokens: (result.usage as Record<string, unknown>)['cache_creation_input_tokens'] as number | undefined,
+            cache_read_input_tokens: (result.usage as Record<string, unknown>)['cache_read_input_tokens'] as number | undefined,
+          };
           const sdkOutcome = result.is_error ? 'error' : 'success';
           outcome = sdkOutcome;
           this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome: sdkOutcome });
@@ -327,8 +312,20 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           } else {
             yield event;
           }
-        } else if ((message as SDKMessage).type === 'result' && terminalDiagnostics) {
-          yield { ...event, diagnostics: terminalDiagnostics } as AgentRunEvent;
+        } else if ((message as SDKMessage).type === 'result') {
+          const terminal_usage = terminalUsage
+            ? {
+                input: terminalUsage.input_tokens ?? 0,
+                output: terminalUsage.output_tokens ?? 0,
+                cache_read: terminalUsage.cache_read_input_tokens ?? 0,
+                cache_write: terminalUsage.cache_creation_input_tokens ?? 0,
+              }
+            : null;
+          yield {
+            ...event,
+            ...(terminalDiagnostics ? { diagnostics: terminalDiagnostics } : {}),
+            terminal_usage,
+          } as AgentRunEvent;
         } else {
           yield event;
         }

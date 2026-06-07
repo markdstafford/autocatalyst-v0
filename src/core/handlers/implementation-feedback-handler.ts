@@ -1,5 +1,5 @@
 import type pino from 'pino';
-import type { ImplementationAgent } from '../../types/ai.js';
+import type { ImplementationAgent, AgentSessionCaptureFn, ImplementationReviewExchange } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { FeedbackItem, ImplementationReviewPublisher } from '../../types/impl-feedback-page.js';
 import type { Run, RunStage } from '../../types/runs.js';
@@ -8,6 +8,7 @@ import { artifactPath } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface ImplementationFeedbackDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -19,6 +20,7 @@ export interface ImplementationFeedbackDeps {
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error' | 'debug'>;
   branchGuard?: BranchGuard;
   reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
+  journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
 }
 
 export type ImplementationFeedbackResult =
@@ -55,12 +57,15 @@ export class ImplementationFeedbackHandler {
 
     let result;
     try {
+      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       result = await this.deps.implementer.implement(
         localPath,
         run.workspace_path,
         additionalContext.value,
         onProgress,
-        { run_id: run.id, request_id: run.request_id, onAgentRequest },
+        { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession },
       );
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
@@ -80,6 +85,25 @@ export class ImplementationFeedbackHandler {
     // Run initial review if coordinator is configured
     let reviewedResult = result;
     if (this.deps.reviewCoordinator) {
+      const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
+      const captureFeedback = this.deps.journal
+        ? (exchange: ImplementationReviewExchange, captureRun: Run) => {
+            for (const finding of exchange.findings) {
+              void this.deps.journal!.captureFeedback({
+                id: finding.id,
+                run: captureRun,
+                target: 'implementation',
+                author_principal: `review:${exchange.review_profile.provider}:${exchange.review_profile.profile}`,
+                text: finding.finding + (finding.suggested_action ? ' | ' + finding.suggested_action : ''),
+                severity: finding.severity,
+                category: finding.category,
+                disposition: exchange.responses.some(r => r.id === finding.id && r.disposition === 'fixed') ? 'addressed' : 'open',
+              }).catch(() => {});
+            }
+          }
+        : undefined;
       reviewedResult = await this.deps.reviewCoordinator.runInitialReview({
         run,
         artifact_path: localPath,
@@ -87,6 +111,8 @@ export class ImplementationFeedbackHandler {
         working_directory: run.workspace_path,
         onProgress,
         onAgentRequest,
+        captureSession: captureSessionForReview,
+        captureFeedback,
       });
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');
