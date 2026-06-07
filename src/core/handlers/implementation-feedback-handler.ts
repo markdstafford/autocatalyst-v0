@@ -58,7 +58,7 @@ export class ImplementationFeedbackHandler {
     let result;
     try {
       const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
-        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: data.round ?? 1, role: data.role ?? null, gate: data.gate ?? null }).catch(() => {}); }
         : undefined;
       result = await this.deps.implementer.implement(
         localPath,
@@ -86,7 +86,7 @@ export class ImplementationFeedbackHandler {
     let reviewedResult = result;
     if (this.deps.reviewCoordinator) {
       const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
-        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: data.round ?? 1, role: data.role ?? null, gate: data.gate ?? null }).catch(() => {}); }
         : undefined;
       const captureFeedback = this.deps.journal
         ? (exchange: ImplementationReviewExchange | GateReviewExchange, captureRun: Run) => {

@@ -331,6 +331,35 @@ describe('RunJournal facade', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('writes role, round, and gate to sessions.jsonl when provided', async () => {
+    const { writer, calls } = makeMockWriter();
+    const journal = new RunJournal(writer);
+    const run = makeRun();
+
+    await journal.captureSession({
+      run,
+      ts_start: '2026-06-07T00:00:00.000Z',
+      ts_end: '2026-06-07T00:00:01.000Z',
+      phase: 'implementation_review',
+      step: 'implementation.review.initial',
+      role: 'critic',
+      round: 2,
+      gate: 'initial',
+      model: { provider: 'openai_agent_sdk', name: 'gpt-5.5' },
+      inference: { effort: null, thinking: null },
+      tokens: null,
+      assistant_turns: null,
+      tool_calls: null,
+      tool_results: null,
+      outcome: 'ok',
+      runner: 'openai_agent',
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].stream).toBe('sessions');
+    expect(calls[0].record).toMatchObject({ role: 'critic', round: 2, gate: 'initial' });
+  });
+
   it('captureSession writes correct stream and fields', async () => {
     const { writer, calls } = makeMockWriter();
     const journal = new RunJournal(writer);

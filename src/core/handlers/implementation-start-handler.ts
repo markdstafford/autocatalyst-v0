@@ -63,7 +63,7 @@ export class ImplementationStartHandler {
 
     const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
     const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
-      ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+      ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: data.round ?? 1, role: data.role ?? null, gate: data.gate ?? null }).catch(() => {}); }
       : undefined;
 
     let result;
