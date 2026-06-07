@@ -54,6 +54,31 @@ describe('ModelPRTitleGenerator', () => {
     expect(requests[0].messages[0].content).toContain('switched to dataSources.query');
   });
 
+  test('emits direct-call token usage and resolved profile via onResult', async () => {
+    const usage = { input: 900, output: 12, cache_read: 0, cache_write: 0 };
+    const resolvedProfile = { id: 'pr-title', provider: 'anthropic_direct', model: 'claude-haiku-4-5' };
+    const requests: DirectModelRunRequest[] = [];
+    const runner: DirectModelRunner = {
+      async run(request) {
+        requests.push(request);
+        return { text: 'add a setup wizard', usage };
+      },
+    };
+    const routingPolicy = {
+      resolve: () => resolvedProfile as never,
+      resolveOptional: () => resolvedProfile as never,
+    };
+    const gen = new ModelPRTitleGenerator(runner, { routingPolicy });
+    const seen: Array<{ usage?: unknown; profile?: unknown }> = [];
+    await withSpec('# Idea: setup wizard\n\ndetails', async (path) => {
+      const title = await gen.generate({ intent: 'idea', spec_path: path, impl_summary: 'added wizard' }, (r) => { seen.push(r); });
+      expect(title).toBe('add a setup wizard');
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].usage).toEqual(usage);
+    expect(seen[0].profile).toEqual(resolvedProfile);
+  });
+
   test('truncates the artifact at the first implementation-heavy heading', async () => {
     const { runner, requests } = fakeRunner('title ok');
     const gen = new ModelPRTitleGenerator(runner);

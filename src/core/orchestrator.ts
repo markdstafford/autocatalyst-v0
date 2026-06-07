@@ -14,7 +14,7 @@ import type { Run, RunStage, RequestIntent } from '../types/runs.js';
 import { VALID_RUN_STAGES } from '../types/runs.js';
 import type { Request, InboundEvent } from '../types/events.js';
 import type { FeedbackSource } from '../types/feedback-source.js';
-import type { IntentClassifier, ClassificationContext, Intent } from '../types/intent.js';
+import type { IntentClassifier, ClassificationContext, Intent, IntentClassifyResult } from '../types/intent.js';
 import type { ArtifactLifecyclePolicy, ArtifactKind } from '../types/artifact.js';
 import type { SpecCommitter } from './spec-committer.js';
 import type { ImplementationReviewPublisher } from '../types/impl-feedback-page.js';
@@ -33,6 +33,7 @@ import { clearAgentRequestContext, isAiActiveStage } from './run-ai-context.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
 import type { RunJournal } from './journal/run-journal.js';
 import type { AgentProfile } from '../types/ai.js';
+import type { NormalizedTokenUsage } from '../types/journal.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
@@ -333,11 +334,12 @@ export class OrchestratorImpl implements Orchestrator {
       let stage1Intent: Intent = 'idea';
       if (this.deps.intentClassifier) {
         const classifyTs = new Date().toISOString();
+        const classifyResult: IntentClassifyResult = {};
         try {
-          stage1Intent = await this.deps.intentClassifier.classify(request.content, 'new_thread');
-          this.captureDirectSession(run, 'intent.classify', classifyTs, 'ok');
+          stage1Intent = await this.deps.intentClassifier.classify(request.content, 'new_thread', (r) => { classifyResult.usage = r.usage; classifyResult.profile = r.profile; });
+          this.captureDirectSession(run, 'intent.classify', classifyTs, 'ok', classifyResult.profile ?? null, classifyResult.usage ?? null);
         } catch (err) {
-          this.captureDirectSession(run, 'intent.classify', classifyTs, 'failed');
+          this.captureDirectSession(run, 'intent.classify', classifyTs, 'failed', classifyResult.profile ?? null, classifyResult.usage ?? null);
           await this.handleClassificationUnavailable(run, request.conversation, err);
           return;
         }
@@ -410,11 +412,12 @@ export class OrchestratorImpl implements Orchestrator {
         let intent: Intent = 'idea';
         if (this.deps.intentClassifier) {
           const classifyTs2 = new Date().toISOString();
+          const classifyResult2: IntentClassifyResult = {};
           try {
-            intent = await this.deps.intentClassifier.classify(enrichedMessage, 'existing_issue');
-            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'ok');
+            intent = await this.deps.intentClassifier.classify(enrichedMessage, 'existing_issue', (r) => { classifyResult2.usage = r.usage; classifyResult2.profile = r.profile; });
+            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'ok', classifyResult2.profile ?? null, classifyResult2.usage ?? null);
           } catch (err) {
-            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'failed');
+            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'failed', classifyResult2.profile ?? null, classifyResult2.usage ?? null);
             await this.handleClassificationUnavailable(run, request.conversation, err);
             return;
           }
@@ -427,7 +430,7 @@ export class OrchestratorImpl implements Orchestrator {
         const stage2ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
         void this.deps.journal?.captureInboundMessage(
           run,
-          { content: request.content },
+          { content: request.content, author: request.author },
           intent,
           stage2ClassificationStatus,
         ).catch(() => {});
@@ -478,7 +481,7 @@ export class OrchestratorImpl implements Orchestrator {
       const stage1ClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
       void this.deps.journal?.captureInboundMessage(
         run,
-        { content: request.content },
+        { content: request.content, author: request.author },
         intent,
         stage1ClassificationStatus,
       ).catch(() => {});
@@ -545,14 +548,15 @@ export class OrchestratorImpl implements Orchestrator {
       if (this.deps.intentClassifier) {
         const context: ClassificationContext = routingStage as ClassificationContext;
         const classifyTs3 = new Date().toISOString();
+        const classifyResult3: IntentClassifyResult = {};
         try {
-          intent = await this.deps.intentClassifier.classify(feedback.content, context);
-          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'ok');
+          intent = await this.deps.intentClassifier.classify(feedback.content, context, (r) => { classifyResult3.usage = r.usage; classifyResult3.profile = r.profile; });
+          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'ok', classifyResult3.profile ?? null, classifyResult3.usage ?? null);
         } catch (err) {
-          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'failed');
+          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'failed', classifyResult3.profile ?? null, classifyResult3.usage ?? null);
           void this.deps.journal?.captureInboundMessage(
             run,
-            { content: feedback.content },
+            { content: feedback.content, author: feedback.author },
             null,
             'failed',
           ).catch(() => {});
@@ -566,7 +570,7 @@ export class OrchestratorImpl implements Orchestrator {
       const threadMsgClassificationStatus = this.deps.intentClassifier ? 'classified' : 'defaulted';
       void this.deps.journal?.captureInboundMessage(
         run,
-        { content: feedback.content },
+        { content: feedback.content, author: feedback.author },
         intent,
         threadMsgClassificationStatus,
       ).catch(() => {});
@@ -576,7 +580,7 @@ export class OrchestratorImpl implements Orchestrator {
       if (FEEDBACK_INTENTS.has(intent) && this.deps.journal) {
         const feedbackTarget = (routingStage === 'reviewing_spec' || routingStage === 'awaiting_planning_input')
           ? 'artifact' as const : 'implementation' as const;
-        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${feedback.origin?.message_id ?? 'unknown'}`;
+        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${feedback.author ?? 'unknown'}`;
         void this.deps.journal.captureFeedback({
           id: `${feedback.request_id}:${feedback.received_at ?? new Date().toISOString()}`,
           run,
@@ -821,6 +825,7 @@ export class OrchestratorImpl implements Orchestrator {
     ts_start: string,
     outcome: 'ok' | 'failed',
     profile?: AgentProfile | null,
+    usage?: NormalizedTokenUsage | null,
   ): void {
     if (!this.deps.journal) return;
     const ts_end = new Date().toISOString();
@@ -841,7 +846,7 @@ export class OrchestratorImpl implements Orchestrator {
         effort: profile?.effort ?? null,
         thinking: profile?.thinking ?? null,
       },
-      tokens: null,
+      tokens: usage ?? null,
       assistant_turns: null,
       tool_calls: null,
       tool_results: null,

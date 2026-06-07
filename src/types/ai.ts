@@ -1,4 +1,4 @@
-import type { ClassificationContext, Intent, IntentClassifier } from './intent.js';
+import type { ClassificationContext, Intent, IntentClassifier, IntentClassifyResult, IntentClassifyResultListener } from './intent.js';
 import type { Request, ThreadMessage } from './events.js';
 import type { ArtifactKind } from './artifact.js';
 import type { RunStage } from './runs.js';
@@ -402,4 +402,4 @@ export interface SpecReviewAuthorResponseResult {
   error?: string;
 }
 
-export type { ClassificationContext, Intent, IntentClassifier };
+export type { ClassificationContext, Intent, IntentClassifier, IntentClassifyResult, IntentClassifyResultListener };

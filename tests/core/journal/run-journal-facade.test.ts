@@ -112,7 +112,7 @@ describe('RunJournal facade', () => {
     const journal = new RunJournal(writer);
     const run = makeRun();
 
-    const message = { content: 'Hello, my api_key=sk-1234567890abcdef', received_at: '2024-01-01T00:00:00.000Z' };
+    const message = { content: 'Hello, my api_key=sk-1234567890abcdef', received_at: '2024-01-01T00:00:00.000Z', author: 'U0ARZ2S9K0C' };
     await journal.captureInboundMessage(run, message, 'idea', 'classified');
 
     expect(calls).toHaveLength(1);
@@ -125,11 +125,23 @@ describe('RunJournal facade', () => {
     expect(rec.content).toContain('[REDACTED]');
     expect(rec.intent).toBe('idea');
     expect(rec.classification_status).toBe('classified');
-    expect(rec.author_principal).toBe('slack:msg-789');
+    // author_principal is derived from the real author (Slack user id), not the message id
+    expect(rec.author_principal).toBe('slack:U0ARZ2S9K0C');
     expect(rec.origin_message_id).toBe('slack:C123:T456:msg-789');
     expect(rec.conversation_id).toBe('slack:C123:T456');
     expect(rec.run_id).toBe('run-001');
     expect(rec.request_id).toBe('req-001');
+  });
+
+  it('captureInboundMessage falls back to unknown principal when author is absent', async () => {
+    const { writer, calls } = makeMockWriter();
+    const journal = new RunJournal(writer);
+    const run = makeRun();
+
+    await journal.captureInboundMessage(run, { content: 'hello' }, null, 'not_applicable');
+
+    const rec = calls[0].record as Record<string, unknown>;
+    expect(rec.author_principal).toBe('slack:unknown');
   });
 
   it('captureInboundMessage uses current time when received_at is absent', async () => {

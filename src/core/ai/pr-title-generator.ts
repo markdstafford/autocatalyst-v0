@@ -4,6 +4,7 @@ import { createLogger } from '../logger.js';
 import type {
   AgentRoutingPolicy,
   DirectModelRunner,
+  IntentClassifyResultListener,
 } from '../../types/ai.js';
 import type { RequestIntent } from '../../types/runs.js';
 
@@ -13,8 +14,13 @@ export interface PRTitleInput {
   impl_summary: string | undefined;
 }
 
+/**
+ * Reuses {@link IntentClassifyResultListener}: an optional out-of-band signal
+ * carrying the direct-call token usage and resolved profile so the caller can
+ * journal the session. Resolves to the title (or null) regardless.
+ */
 export interface PRTitleGenerator {
-  generate(input: PRTitleInput): Promise<string | null>;
+  generate(input: PRTitleInput, onResult?: IntentClassifyResultListener): Promise<string | null>;
 }
 
 export interface ModelPRTitleGeneratorOptions {
@@ -34,7 +40,7 @@ export class ModelPRTitleGenerator implements PRTitleGenerator {
     this.logger = createLogger('pr-title-generator', { destination: options.logDestination });
   }
 
-  async generate(input: PRTitleInput): Promise<string | null> {
+  async generate(input: PRTitleInput, onResult?: IntentClassifyResultListener): Promise<string | null> {
     let content: string;
     try {
       content = await readFile(input.spec_path, 'utf8');
@@ -49,6 +55,7 @@ export class ModelPRTitleGenerator implements PRTitleGenerator {
     const truncated = truncateArtifact(content);
     const prompt = buildPrompt(input.intent, truncated, input.impl_summary);
     const route = { task: 'pr.title_generate' as const, intent: input.intent };
+    const profile = this.options.routingPolicy?.resolve(route) ?? null;
 
     let attempt = 0;
     let lastError: unknown;
@@ -56,11 +63,12 @@ export class ModelPRTitleGenerator implements PRTitleGenerator {
       try {
         const response = await this.runner.run({
           route,
-          profile: this.options.routingPolicy?.resolve(route),
+          profile: profile ?? undefined,
           model: this.options.model,
           max_tokens: this.options.max_tokens ?? 60,
           messages: [{ role: 'user', content: prompt }],
         });
+        onResult?.({ usage: response.usage ?? null, profile });
         const title = postProcess(response.text);
         if (title === null) {
           this.logger.warn(
