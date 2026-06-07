@@ -27,6 +27,8 @@ import type {
   AgentThinking,
 } from '../../types/ai.js';
 import { createLogger } from '../../core/logger.js';
+import { redactSecrets } from '../../core/journal/redaction.js';
+export { redactSecrets } from '../../core/journal/redaction.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 import { buildSandboxEnvironmentWithSummary, buildSandboxEnvironment } from '../sandbox-environment.js';
 import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy, type RequestLogOptions } from './anthropic-beta-header-filter-proxy.js';
@@ -34,27 +36,6 @@ import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProx
 type QueryFn = typeof _query;
 
 const MAX_STDERR_LINES = 50;
-
-const SECRET_PATTERNS = [
-  /(?:api[_-]?key|secret|password|credential)\s*[=:]\s*\S+/gi,
-  /ghp_[A-Za-z0-9_]+/g,
-  /github_pat_[A-Za-z0-9_]+/g,
-  /gho_[A-Za-z0-9_]+/g,
-  /ghs_[A-Za-z0-9_]+/g,
-  /sk-[A-Za-z0-9_-]+/g,
-  /xox[bpras]-[A-Za-z0-9-]+/g,
-  /xapp-[A-Za-z0-9-]+/g,
-  /Authorization:\s*Bearer\s+\S+/gi,
-  /ANTHROPIC_CUSTOM_HEADERS[^=]*=\s*api-key:\s*\S+/gi,
-];
-
-export function redactSecrets(text: string): string {
-  let redacted = text;
-  for (const pattern of SECRET_PATTERNS) {
-    redacted = redacted.replace(pattern, '[REDACTED]');
-  }
-  return redacted;
-}
 
 export interface ClaudeSdkMessageDiagnostic {
   sdk_message_type: string;
