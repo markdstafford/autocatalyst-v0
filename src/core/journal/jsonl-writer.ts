@@ -16,6 +16,14 @@ export interface JsonlJournalWriterOptions {
   writerId?: string;
 }
 
+/**
+ * Append-only JSONL journal writer.
+ *
+ * - A new writer_id is generated on each process boot (randomUUID at construction time).
+ * - seq resets to 0 on restart; importers must use physical file order, not seq alone,
+ *   for global ordering across process restarts.
+ * - Cross-process global sequence ordering is not required for v0.
+ */
 export class JsonlJournalWriter implements JournalWriter {
   private readonly journalDir: string;
   private readonly writer_id: string;

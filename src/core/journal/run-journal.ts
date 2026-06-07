@@ -54,6 +54,11 @@ export interface CaptureFeedbackParams {
 
 export class RunJournal {
   private readonly writer: JournalWriter;
+  /**
+   * In-memory, process-local counter keyed by run_id.
+   * Resets to 0 on process restart — the Map is not persisted.
+   * Importers must use sessions.jsonl file order filtered by run_id, not session_seq or ts_start.
+   */
   private readonly sessionSeq = new Map<string, number>();
 
   constructor(writer: JournalWriter) {

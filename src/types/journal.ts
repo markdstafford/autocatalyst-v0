@@ -1,3 +1,14 @@
+/**
+ * Journal type contracts.
+ *
+ * - tokens: null means token usage was unavailable (not zero); the OpenAI Agent SDK may not
+ *   provide token counts, so callers must treat null as "unknown" rather than "no tokens used".
+ * - Raw counts only — pricing, usd conversion, and rate tables are intentionally out of scope.
+ * - Session replay order: physical sessions.jsonl file order filtered by run_id is canonical.
+ *   session_seq is best-effort and resets on process restart; do not rely on it for global ordering.
+ * - Write failures are logged and must never fail an active run (best-effort writes).
+ * - Schema importer for future versions is deferred; no migration utilities exist in v0.
+ */
 import type { AgentEffort, AgentThinking, AgentTaskKind, ImplementationReviewExchange, ImplementationReviewFindingCategory, ImplementationReviewFindingSeverity } from './ai.js';
 import type { ConversationRef, MessageRef } from './channel.js';
 import type { Intent } from './intent.js';
@@ -43,7 +54,11 @@ export interface JournalMessageRecord extends JournalBaseRecord {
   origin_message_id: string | null;
 }
 
-/** Session replay order is the physical sessions.jsonl file order filtered by run_id. */
+/**
+ * Session replay order is the physical sessions.jsonl file order filtered by run_id.
+ * session_seq is best-effort: it is in-memory and resets on process restart.
+ * Importers must not use session_seq or ts_start for global ordering.
+ */
 export interface JournalSessionRecord extends JournalBaseRecord {
   session_seq: number;
   ts_start: string;
@@ -59,6 +74,7 @@ export interface JournalSessionRecord extends JournalBaseRecord {
   gate: null;
   model: { provider: string; name: string | null };
   inference: { effort: AgentEffort | null; thinking: AgentThinking | null };
+  /** null means token usage was unavailable (e.g. OpenAI Agent SDK did not provide counts), not zero. */
   tokens: NormalizedTokenUsage | null;
   assistant_turns: number | null;
   tool_calls: number | null;
