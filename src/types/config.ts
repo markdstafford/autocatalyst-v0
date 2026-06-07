@@ -65,6 +65,16 @@ export interface SpecReviewPolicy {
   template_conformance?: boolean;
 }
 
+export interface SpecAuthoringApiConvergencePolicy {
+  enabled?: boolean;
+  max_rounds?: number;
+  allow_same_model?: boolean;
+}
+
+export interface SpecAuthoringPolicy {
+  api_convergence?: SpecAuthoringApiConvergencePolicy;
+}
+
 export type ImplementationReviewConvergenceDepth = 'build_only' | 'layout' | 'public_api' | 'full';
 export type ImplementationReviewFeedbackDepth = ImplementationReviewConvergenceDepth | 'inherit';
 
@@ -136,6 +146,7 @@ export interface WorkflowConfig {
   ai: AiConfig;
   implementation_review?: ImplementationReviewPolicy;
   spec_review?: SpecReviewPolicy;
+  spec_authoring?: SpecAuthoringPolicy;
   sandbox?: SandboxConfig;
   journal?: JournalConfig;
   [key: string]: unknown;

@@ -20,6 +20,8 @@ export function requiredSkillsForRoute(route: AgentRoute): AgentSkillRef[] {
     case 'question.answer':
     case 'implementation.review.initial':
     case 'implementation.review.final':
+    case 'artifact.api.propose':
+    case 'artifact.api.critique':
       return [];
   }
 }

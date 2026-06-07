@@ -482,3 +482,28 @@ export function getSpecReviewPolicy(config: WorkflowConfig): Required<SpecReview
     template_conformance: raw?.['template_conformance'] === false ? false : true,
   };
 }
+
+export function getSpecAuthoringPolicy(config: WorkflowConfig): {
+  api_convergence: { enabled: boolean; max_rounds: number; allow_same_model: boolean };
+} {
+  const rawAuthoring = (config as Record<string, unknown>)['spec_authoring'];
+  const authoring = rawAuthoring && typeof rawAuthoring === 'object' && !Array.isArray(rawAuthoring)
+    ? rawAuthoring as Record<string, unknown>
+    : {};
+  const rawApi = authoring['api_convergence'];
+  const api = rawApi && typeof rawApi === 'object' && !Array.isArray(rawApi)
+    ? rawApi as Record<string, unknown>
+    : {};
+  const rawMaxRounds = api['max_rounds'];
+  const max_rounds = typeof rawMaxRounds === 'number' ? rawMaxRounds : 5;
+  if (!Number.isInteger(max_rounds) || max_rounds < 1) {
+    throw new Error('spec_authoring.api_convergence.max_rounds must be a positive integer');
+  }
+  return {
+    api_convergence: {
+      enabled: api['enabled'] === true,
+      max_rounds,
+      allow_same_model: api['allow_same_model'] === true,
+    },
+  };
+}
