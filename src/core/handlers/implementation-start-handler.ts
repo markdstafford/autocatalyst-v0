@@ -62,12 +62,12 @@ export class ImplementationStartHandler {
     }
 
     const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
+    const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
+      ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+      : undefined;
 
     let result;
     try {
-      const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
-        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
-        : undefined;
       result = await this.deps.implementer.implement(
         refs.local_path,
         run.workspace_path,
@@ -94,9 +94,6 @@ export class ImplementationStartHandler {
     // Run initial review if coordinator is configured
     let reviewedResult = result;
     if (this.deps.reviewCoordinator) {
-      const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
-        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
-        : undefined;
       reviewedResult = await this.deps.reviewCoordinator.runInitialReview({
         run,
         artifact_path: refs.local_path,
@@ -104,7 +101,7 @@ export class ImplementationStartHandler {
         working_directory: run.workspace_path,
         onProgress,
         onAgentRequest,
-        captureSession: captureSessionForReview,
+        captureSession,
       });
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');
