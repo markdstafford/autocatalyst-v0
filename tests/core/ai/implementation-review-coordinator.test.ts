@@ -1040,3 +1040,94 @@ describe('ImplementationReviewCoordinator', () => {
     });
   });
 });
+
+describe('runLayeredImplementation — regression: no forbidden git operations', () => {
+  it('runner.run is never called with a prompt containing checkout, push, merge, or branch-create commands', async () => {
+    const capturedPrompts: string[] = [];
+    const capturingRunner: AgentRunner = {
+      run: vi.fn().mockImplementation((params: { prompt: string }) => {
+        capturedPrompts.push(params.prompt);
+        return (async function* () {})();
+      }),
+    };
+    const readFile = vi.fn().mockImplementation(async () => {
+      return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+    });
+    const deps = makeDeps(undefined, { runner: capturingRunner, readFile });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    for (const prompt of capturedPrompts) {
+      // No prompt should instruct the agent to run forbidden git operations
+      expect(prompt).not.toMatch(/git\s+checkout/i);
+      expect(prompt).not.toMatch(/git\s+push/i);
+      expect(prompt).not.toMatch(/git\s+merge/i);
+      expect(prompt).not.toMatch(/git\s+branch\s+-[cCmM]/i);
+      expect(prompt).not.toMatch(/gh pr create/i);
+    }
+  });
+
+  it('early altitude prompts instruct the critic not to file missing-body or missing-test findings', async () => {
+    const capturedPrompts: Map<number, string> = new Map();
+    let callIndex = 0;
+    const capturingRunner: AgentRunner = {
+      run: vi.fn().mockImplementation((params: { prompt: string }) => {
+        capturedPrompts.set(callIndex++, params.prompt);
+        return (async function* () {})();
+      }),
+    };
+    const readFile = vi.fn().mockImplementation(async () => {
+      return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+    });
+    const deps = makeDeps(undefined, { runner: capturingRunner, readFile });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    // layout (call 0) and public_api (call 1) prompts must include the early-gate restriction
+    const layoutPrompt = capturedPrompts.get(0);
+    const publicApiPrompt = capturedPrompts.get(1);
+    const buildPrompt = capturedPrompts.get(2);
+
+    expect(layoutPrompt).toBeDefined();
+    expect(layoutPrompt).toContain('Do not file missing-body, missing-test, or missing-implementation findings');
+
+    expect(publicApiPrompt).toBeDefined();
+    expect(publicApiPrompt).toContain('Do not file missing-body, missing-test, or missing-implementation findings');
+
+    // build prompt must NOT contain the early-gate restriction
+    expect(buildPrompt).toBeDefined();
+    expect(buildPrompt).not.toContain('Do not file missing-body');
+  });
+
+  it('convergence disabled falls back to single-pass and review_exchanges is used, not gate_exchanges', async () => {
+    const freshDeps = makeDeps();
+    freshDeps.policy = { ...freshDeps.policy, convergence: { enabled: false, allow_same_model: false } };
+    const coordinator = new ImplementationReviewCoordinator(freshDeps);
+    const run = makeRun();
+    const original = makeCompleteResult();
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: original, working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    // Single-pass behavior: review_exchanges is populated, gate_exchanges is not
+    expect(result).toBe(original);
+    expect(run.review_exchanges).toHaveLength(1);
+    expect((run as Record<string, unknown>)['gate_exchanges']).toBeUndefined();
+    // Runner called at most once (single-pass review)
+    expect(freshDeps.runner.run).toHaveBeenCalledTimes(1);
+  });
+});

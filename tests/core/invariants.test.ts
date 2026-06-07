@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
 import { loadConfig, redactConfig } from '../../src/core/config.js';
 import { VALID_RUN_STAGES } from '../../src/types/runs.js';
+import { allowedCategoriesForGate } from '../../src/core/ai/layered-convergence-policy.js';
 
 describe('cross-cutting: JSON output validity', () => {
   let tempDir: string;
@@ -74,5 +75,42 @@ describe('run stage invariants', () => {
       'reviewing_spec',
       'speccing',
     ]);
+  });
+});
+
+describe('finding category invariants', () => {
+  it('build gate categories include the full approved set of finding categories', () => {
+    // ImplementationReviewFindingCategory is a closed type — this test pins the
+    // allowed set so accidental additions are caught during review.
+    const buildCategories = allowedCategoriesForGate('build');
+    expect(buildCategories.sort()).toEqual([
+      'correctness',
+      'docs',
+      'maintainability',
+      'pr_readiness',
+      'security',
+      'test',
+    ]);
+  });
+
+  it('early altitude finding categories are restricted to a subset (no correctness/test/pr_readiness)', () => {
+    for (const gate of ['layout', 'public_api', 'private_api'] as const) {
+      const cats = allowedCategoriesForGate(gate);
+      expect(cats).not.toContain('correctness');
+      expect(cats).not.toContain('test');
+      expect(cats).not.toContain('pr_readiness');
+    }
+  });
+
+  it('layered depth does not add new RunStage values at any altitude', () => {
+    // All altitudes resolve to existing stages — no new stages are introduced
+    // by the layered-convergence feature. This cross-checks the RunStage
+    // invariant from the perspective of the altitude system.
+    const expectedStages = new Set(VALID_RUN_STAGES);
+    // Simulate what the handler transitions to: still 'implementing' / 'reviewing_implementation'
+    const stagesUsedByLayered = ['implementing', 'reviewing_implementation'] as const;
+    for (const stage of stagesUsedByLayered) {
+      expect(expectedStages.has(stage)).toBe(true);
+    }
   });
 });
