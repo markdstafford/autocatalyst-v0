@@ -343,4 +343,162 @@ describe('ArtifactCreationHandler', () => {
       expect.stringContaining('Artifact ready for review'),
     );
   });
+
+  describe('authoring API convergence', () => {
+    it('disabled policy calls create() once for idea and does not call coordinator', async () => {
+      const create = vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/feature-test.md' });
+      const coordinatorRun = vi.fn();
+      const { handler, deps } = makeHandler({
+        artifactAuthoringAgent: { create },
+        specAuthoringPolicy: { api_convergence: { enabled: false, max_rounds: 3, allow_same_model: false } },
+        authoringApiConvergenceCoordinator: { run: coordinatorRun },
+      });
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(create).toHaveBeenCalledOnce();
+      expect(coordinatorRun).not.toHaveBeenCalled();
+      expect(deps.failRun).not.toHaveBeenCalled();
+    });
+
+    it('enabled policy for idea calls createTechSpecDraft, branchGuard, coordinator, decomposeTasks, then existing flow', async () => {
+      const callOrder: string[] = [];
+
+      const createTechSpecDraft = vi.fn().mockImplementation(async () => {
+        callOrder.push('techDraft');
+        return { artifact_path: '/ws/request-001/context-human/specs/feature-test.md' };
+      });
+      const branchGuardCheck = vi.fn().mockImplementation(async () => { callOrder.push('branchGuard'); });
+      const coordinatorRun = vi.fn().mockImplementation(async () => {
+        callOrder.push('apiConvergence');
+        return { artifact: { files: [], public_api: [], types: [], notes: '' }, markdown: '## Converged API\n\n### Notes\n\n', converged: true };
+      });
+      const decomposeTasks = vi.fn().mockImplementation(async () => {
+        callOrder.push('decomposeTasks');
+        return { artifact_path: '/ws/request-001/context-human/specs/feature-test.md' };
+      });
+      const createArtifact = vi.fn().mockImplementation(async () => {
+        callOrder.push('publish');
+        return { id: 'CANVAS001', url: 'https://artifact.example.test/CANVAS001' };
+      });
+      const specContent = '# Spec\n\n## Task list\n\n- [ ] Task 1\n';
+      const readFile = vi.fn().mockResolvedValue(specContent);
+      const writeFile = vi.fn().mockResolvedValue(undefined);
+
+      const { handler, deps } = makeHandler({
+        artifactAuthoringAgent: {
+          create: vi.fn(),
+          createTechSpecDraft,
+          decomposeTasks,
+        },
+        branchGuard: { check: branchGuardCheck },
+        specAuthoringPolicy: { api_convergence: { enabled: true, max_rounds: 2, allow_same_model: false } },
+        authoringApiConvergenceCoordinator: { run: coordinatorRun },
+        readFile,
+        writeFile,
+        artifactPublisher: {
+          createArtifact,
+          updateStatus: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      // Tech spec draft, then branch guard #1, then API convergence, then decompose tasks,
+      // then branch guard #2 (existing), then publish
+      expect(callOrder).toEqual(['techDraft', 'branchGuard', 'apiConvergence', 'decomposeTasks', 'branchGuard', 'publish']);
+      expect(deps.artifactAuthoringAgent.create).not.toHaveBeenCalled();
+      expect(coordinatorRun).toHaveBeenCalledWith(expect.objectContaining({
+        artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+        working_directory: '/ws/request-001',
+      }));
+      expect(writeFile).toHaveBeenCalledWith('/ws/request-001/context-human/specs/feature-test.md', expect.stringContaining('## Converged API'), 'utf-8');
+      expect(deps.failRun).not.toHaveBeenCalled();
+      expect(run.stage).toBe('reviewing_spec');
+    });
+
+    it('enabled policy does not affect bug triage — uses create() instead', async () => {
+      const create = vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/bug-login.md' });
+      const coordinatorRun = vi.fn();
+      const createTechSpecDraft = vi.fn();
+      const decomposeTasks = vi.fn();
+
+      const { handler, deps } = makeHandler({
+        artifactAuthoringAgent: { create, createTechSpecDraft, decomposeTasks },
+        specAuthoringPolicy: { api_convergence: { enabled: true, max_rounds: 2, allow_same_model: false } },
+        authoringApiConvergenceCoordinator: { run: coordinatorRun },
+      });
+
+      const run = makeRun({ intent: 'bug' });
+      await handler.handle(run, makeRequest(), 'bug');
+
+      expect(create).toHaveBeenCalledOnce();
+      expect(createTechSpecDraft).not.toHaveBeenCalled();
+      expect(coordinatorRun).not.toHaveBeenCalled();
+      expect(decomposeTasks).not.toHaveBeenCalled();
+      expect(deps.failRun).not.toHaveBeenCalled();
+    });
+
+    it('enabled policy does not activate when coordinator is missing', async () => {
+      const create = vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/feature-test.md' });
+      const createTechSpecDraft = vi.fn();
+      const decomposeTasks = vi.fn();
+
+      const { handler, deps } = makeHandler({
+        artifactAuthoringAgent: { create, createTechSpecDraft, decomposeTasks },
+        specAuthoringPolicy: { api_convergence: { enabled: true, max_rounds: 2, allow_same_model: false } },
+        // authoringApiConvergenceCoordinator intentionally omitted
+      });
+
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(create).toHaveBeenCalledOnce();
+      expect(createTechSpecDraft).not.toHaveBeenCalled();
+      expect(deps.failRun).not.toHaveBeenCalled();
+    });
+
+    it('enabled path destroys workspace and fails run when tech spec draft throws', async () => {
+      const draftError = new Error('tech spec draft failed');
+      const { handler, deps } = makeHandler({
+        artifactAuthoringAgent: {
+          create: vi.fn(),
+          createTechSpecDraft: vi.fn().mockRejectedValue(draftError),
+          decomposeTasks: vi.fn(),
+        },
+        specAuthoringPolicy: { api_convergence: { enabled: true, max_rounds: 2, allow_same_model: false } },
+        authoringApiConvergenceCoordinator: { run: vi.fn() },
+      });
+
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
+      expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, draftError);
+      expect(deps.artifactPublisher.createArtifact).not.toHaveBeenCalled();
+    });
+
+    it('enabled path destroys workspace and fails run when coordinator throws', async () => {
+      const coordinatorError = new Error('coordinator failed');
+      const { handler, deps } = makeHandler({
+        artifactAuthoringAgent: {
+          create: vi.fn(),
+          createTechSpecDraft: vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/feature-test.md' }),
+          decomposeTasks: vi.fn(),
+        },
+        specAuthoringPolicy: { api_convergence: { enabled: true, max_rounds: 2, allow_same_model: false } },
+        authoringApiConvergenceCoordinator: { run: vi.fn().mockRejectedValue(coordinatorError) },
+        readFile: vi.fn().mockResolvedValue('# Spec\n\n## Task list\n\n'),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+      });
+
+      const run = makeRun({ intent: 'idea' });
+      await handler.handle(run, makeRequest(), 'idea');
+
+      expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
+      expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, coordinatorError);
+      expect(deps.artifactPublisher.createArtifact).not.toHaveBeenCalled();
+    });
+  });
 });
