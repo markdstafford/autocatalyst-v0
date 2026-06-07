@@ -3,6 +3,7 @@ import type { Request, ThreadMessage } from './events.js';
 import type { ArtifactKind } from './artifact.js';
 import type { RunStage } from './runs.js';
 import type { TelemetryContext } from '../core/ai/telemetry-context.js';
+import type { NormalizedTokenUsage } from './journal.js';
 
 export type AgentTaskKind =
   | 'intent.classify'
@@ -34,6 +35,8 @@ export interface AgentInvocationMetadata {
 export interface AgentServiceTelemetry {
   run_id?: string;
   request_id?: string;
+  phase?: string;
+  captureSession?: unknown;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
 }
 
@@ -148,6 +151,8 @@ export interface DirectModelRunRequest {
 export interface DirectModelRunResult {
   text: string;
   raw?: unknown;
+  usage?: NormalizedTokenUsage | null;
+  runner?: 'anthropic_direct' | 'openai_direct';
 }
 
 export interface DirectModelRunner {
@@ -171,6 +176,7 @@ export interface AgentDrainSummary {
   tool_call_count: number;
   tool_result_count: number;
   elapsed_ms: number;
+  terminal_usage?: NormalizedTokenUsage | null;
   diagnostics?: {
     stderr_excerpt_redacted?: string;
   };
