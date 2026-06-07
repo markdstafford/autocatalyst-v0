@@ -49,6 +49,7 @@ export interface CaptureFeedbackParams {
   category: JournalFeedbackCategory;
   disposition?: JournalFeedbackDisposition;
   thread?: Array<{ author_principal: string | null; ts: string | null; text: string }>;
+  received_at?: string;
 }
 
 export class RunJournal {
@@ -154,12 +155,12 @@ export class RunJournal {
   }
 
   async captureFeedback(params: CaptureFeedbackParams): Promise<void> {
-    const { id, run, target, author_principal, text, severity, category, disposition = 'open', thread = [] } = params;
+    const { id, run, target, author_principal, text, severity, category, disposition = 'open', thread = [], received_at } = params;
     const identity = identityForRun(run);
 
     const record: Omit<JournalFeedbackRecord, 'seq' | 'writer_id'> = {
       id,
-      ts_created: new Date().toISOString(),
+      ts_created: received_at ?? new Date().toISOString(),
       conversation_id: identity.conversation_id,
       topic_id: identity.topic_id,
       run_id: identity.run_id,

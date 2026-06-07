@@ -576,7 +576,7 @@ export class OrchestratorImpl implements Orchestrator {
       if (FEEDBACK_INTENTS.has(intent) && this.deps.journal) {
         const feedbackTarget = (routingStage === 'reviewing_spec' || routingStage === 'awaiting_planning_input')
           ? 'artifact' as const : 'implementation' as const;
-        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${run.origin?.message_id ?? 'unknown'}`;
+        const authorPrincipal = `${run.conversation?.provider ?? 'unknown'}:${feedback.origin?.message_id ?? 'unknown'}`;
         void this.deps.journal.captureFeedback({
           id: `${feedback.request_id}:${feedback.received_at ?? new Date().toISOString()}`,
           run,
@@ -586,6 +586,7 @@ export class OrchestratorImpl implements Orchestrator {
           severity: 'info',
           category: 'human_feedback',
           disposition: 'open',
+          received_at: feedback.received_at,
         }).catch(() => {});
       }
 
