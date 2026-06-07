@@ -28,6 +28,8 @@ import type { HandlerRegistry } from './handler-registry.js';
 import { buildDefaultHandlerRegistry as buildDefaultHandlers } from './default-handler-registry.js';
 import type { BranchGuard } from './git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from './ai/implementation-review-coordinator.js';
+import type { ResolvedImplementationConvergencePolicy } from './ai/layered-convergence-policy.js';
+import type { BudgetWriter } from './journal/model-session-budget.js';
 import type { SpecReviewCoordinator } from './ai/spec-review-coordinator.js';
 import { clearAgentRequestContext, isAiActiveStage } from './run-ai-context.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
@@ -86,6 +88,8 @@ export interface OrchestratorDeps {
   handlerRegistry?: HandlerRegistry;
   branchGuard?: BranchGuard;
   reviewCoordinator?: ImplementationReviewCoordinator;
+  convergencePolicy?: ResolvedImplementationConvergencePolicy;
+  budgetWriter?: BudgetWriter;
   specReviewCoordinator?: SpecReviewCoordinator;
   validatePlanPath?: (workspacePath: string, planPath: string) => string;
   autoPruneWorkspace?: boolean;
@@ -636,6 +640,8 @@ export class OrchestratorImpl implements Orchestrator {
       logger: this.logger,
       branchGuard: this.deps.branchGuard,
       reviewCoordinator: this.deps.reviewCoordinator,
+      convergencePolicy: this.deps.convergencePolicy,
+      budgetWriter: this.deps.budgetWriter,
       specReviewCoordinator: this.deps.specReviewCoordinator,
       validatePlanPath: this.deps.validatePlanPath,
       autoPruneWorkspace: this.deps.autoPruneWorkspace,
