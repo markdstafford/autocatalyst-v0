@@ -1111,6 +1111,98 @@ describe('runLayeredImplementation — regression: no forbidden git operations',
     expect(buildPrompt).not.toContain('Do not file missing-body');
   });
 
+  it('early altitude proposer prompt does not contain build/test run instructions', async () => {
+    // Criteria 8: the proposer (implementer) at early altitudes must stay within
+    // the altitude contract. When the layout critic finds a blocker, the coordinator
+    // calls implementer.implement with buildLayeredRevisePrompt, which restricts work
+    // to the current altitude and must not instruct the agent to run npm test, build, or lint.
+    const capturedProposerPrompts: string[] = [];
+    const capturingImplementer: Pick<ImplementationAgent, 'implement'> = {
+      implement: vi.fn().mockImplementation((_specPath: string, _workDir: string, prompt: string) => {
+        capturedProposerPrompts.push(prompt);
+        // Return complete with a review_responses entry so convergence proceeds
+        return Promise.resolve(makeCompleteResult({
+          review_responses: [{ id: 'L1', disposition: 'fixed', response: 'Fixed layout.' }],
+        }));
+      }),
+    };
+    let callCount = 0;
+    const readFile = vi.fn().mockImplementation(async () => {
+      // Round 1: layout blocker → triggers proposer revision; Round 2: clean
+      const result = callCount === 0
+        ? { status: 'findings', summary: 'Blocked.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Bad layout.', scope: 'current_altitude', reason_code: 'layout_boundary' }] }
+        : { status: 'no_findings', summary: 'Clean.', findings: [] };
+      callCount++;
+      return JSON.stringify(result);
+    });
+    const deps = makeDeps(undefined, { readFile, implementer: capturingImplementer });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'build'] },
+    );
+
+    // The proposer was called during the layout revise round
+    expect(capturedProposerPrompts.length).toBeGreaterThanOrEqual(1);
+    const layoutRevisePrompt = capturedProposerPrompts[0]!;
+
+    // Must not instruct the agent to run build/test/lint commands
+    expect(layoutRevisePrompt).not.toMatch(/npm\s+(test|run\s+build|run\s+lint)/i);
+    expect(layoutRevisePrompt).not.toMatch(/yarn\s+(test|build|lint)/i);
+    expect(layoutRevisePrompt).not.toMatch(/pnpm\s+(test|build|lint)/i);
+
+    // Must include the altitude-contract restriction (stay within current altitude)
+    expect(layoutRevisePrompt).toContain('altitude contract');
+  });
+
+  it('build altitude proposer prompt includes instructions to implement bodies and tests', async () => {
+    // Criteria 9: the proposer at build altitude must be mandated to address
+    // test coverage, code, and docs — not just restricted to a skeleton altitude.
+    // buildImplementerResponsePrompt (used for build) includes "code/tests/docs" and
+    // requests testing_steps, whereas early gates use the altitude-limited revise prompt.
+    const capturedProposerPrompts: string[] = [];
+    const capturingImplementer: Pick<ImplementationAgent, 'implement'> = {
+      implement: vi.fn().mockImplementation((_specPath: string, _workDir: string, prompt: string) => {
+        capturedProposerPrompts.push(prompt);
+        return Promise.resolve(makeCompleteResult({
+          review_responses: [{ id: 'B1', disposition: 'fixed', response: 'Added tests.' }],
+        }));
+      }),
+    };
+    let callCount = 0;
+    const readFile = vi.fn().mockImplementation(async () => {
+      // Round 1 of build: blocker → triggers proposer revision; Round 2: clean
+      const result = callCount === 0
+        ? { status: 'findings', summary: 'Missing tests.', findings: [{ id: 'B1', severity: 'blocker', category: 'test', finding: 'No tests written.' }] }
+        : { status: 'no_findings', summary: 'Clean.', findings: [] };
+      callCount++;
+      return JSON.stringify(result);
+    });
+    const deps = makeDeps(undefined, { readFile, implementer: capturingImplementer });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['build'] },
+    );
+
+    // The proposer was called during the build revise round
+    expect(capturedProposerPrompts.length).toBeGreaterThanOrEqual(1);
+    const buildRevisePrompt = capturedProposerPrompts[0]!;
+
+    // Build proposer must include test/docs mandate (from buildImplementerResponsePrompt)
+    expect(buildRevisePrompt).toMatch(/code\/tests\/docs|tests?|testing_steps/i);
+
+    // Build proposer must NOT contain the early-altitude altitude-contract restriction
+    // (which would incorrectly limit the proposer to skeleton-only work)
+    expect(buildRevisePrompt).not.toContain('do not add lower-altitude work');
+  });
+
   it('convergence disabled falls back to single-pass and review_exchanges is used, not gate_exchanges', async () => {
     const freshDeps = makeDeps();
     freshDeps.policy = { ...freshDeps.policy, convergence: { enabled: false, allow_same_model: false } };
