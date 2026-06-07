@@ -18,6 +18,9 @@ export type AgentSessionCaptureFn = (data: {
   tool_results: number | null;
   outcome: 'ok' | 'failed' | 'incomplete';
   runner: 'anthropic_agent' | 'openai_agent';
+  role?: AgentRole | string | null;
+  round?: number;
+  gate?: 'initial' | 'final' | string | null;
 }) => void;
 
 export type AgentTaskKind =
@@ -56,6 +59,10 @@ export interface AgentServiceTelemetry {
   phase?: string;
   captureSession?: AgentSessionCaptureFn;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
+  route?: AgentRoute;
+  role?: AgentRole | string;
+  round?: number;
+  gate?: 'initial' | 'final' | string;
 }
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'max';

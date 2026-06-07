@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
-import type { AgentRunner, AgentRoutingPolicy, ImplementationAgent, ImplementationResult, ImplementationReviewResult, AgentProfile } from '../../../src/types/ai.js';
+import type { AgentRunner, AgentRoutingPolicy, ImplementationAgent, ImplementationResult, ImplementationReviewResult, AgentProfile, GateReviewExchange } from '../../../src/types/ai.js';
 import type { Run } from '../../../src/types/runs.js';
 
 const WORKING_DIR = '/ws/test';
@@ -483,6 +483,94 @@ describe('ImplementationReviewCoordinator', () => {
       expect(run.review_exchanges).toHaveLength(1);
       // gate_exchanges is not set
       expect((run as Record<string, unknown>)['gate_exchanges']).toBeUndefined();
+    });
+  });
+
+  describe('convergence enabled', () => {
+    function makeConvergenceDeps(reviewResults: ImplementationReviewResult[], overrides: Record<string, unknown> = {}) {
+      let callCount = 0;
+      const readFile = vi.fn().mockImplementation(async () => {
+        const result = reviewResults[callCount] ?? { status: 'no_findings', summary: 'ok', findings: [] };
+        callCount++;
+        return JSON.stringify(result);
+      });
+      const deps = makeDeps({ status: 'no_findings', summary: 'unused', findings: [] }, { readFile, ...overrides });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, max_final_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      return deps;
+    }
+
+    it('re-reviews after a proposer response and converges on round 2', async () => {
+      const deps = makeConvergenceDeps([
+        { status: 'findings', summary: 'Round 1.', findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }] },
+        { status: 'no_findings', summary: 'Round 2 clean.', findings: [] },
+      ], {
+        implementer: makeImplementer(makeCompleteResult({ summary: 'Updated after round 1.', review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }] })),
+      });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.summary).toBe('Updated after round 1.');
+      expect(deps.runner.run).toHaveBeenCalledTimes(2);
+      expect(deps.implementer.implement).toHaveBeenCalledTimes(1);
+      expect(run.gate_exchanges).toHaveLength(2);
+      expect(run.gate_exchanges![0]).toMatchObject({ gate: 'initial', round: 1, converged: false, review_status: 'addressed' });
+      expect(run.gate_exchanges![1]).toMatchObject({ gate: 'initial', round: 2, converged: true, review_status: 'converged' });
+    });
+
+    it('treats info-only findings as converged and does not call proposer', async () => {
+      const deps = makeConvergenceDeps([
+        { status: 'findings', summary: 'Only notes.', findings: [{ id: 'INIT-INFO-1', severity: 'info', category: 'docs', finding: 'Optional note.' }] },
+      ]);
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.status).toBe('complete');
+      expect(deps.implementer.implement).not.toHaveBeenCalled();
+      expect(run.gate_exchanges![0]).toMatchObject({ converged: true, review_status: 'converged' });
+      expect((run.gate_exchanges as GateReviewExchange[])[0].findings[0].severity).toBe('info');
+    });
+
+    it('fails immediately with max_rounds when max_initial_rounds is 1 and blockers are present', async () => {
+      const deps = makeConvergenceDeps([
+        { status: 'findings', summary: 'Still blocked.', findings: [{ id: 'INIT-1', severity: 'blocker', category: 'correctness', finding: 'Bug remains.' }] },
+      ]);
+      deps.policy = { ...deps.policy, max_initial_rounds: 1 };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('initial did not converge');
+      expect(deps.implementer.implement).not.toHaveBeenCalled();
+      expect(run.gate_exchanges![0]).toMatchObject({ converged: false, review_status: 'non_converged', non_convergence_reason: 'max_rounds' });
+    });
+
+    it('passes the proposer role route into the actual implementer review-response call', async () => {
+      const deps = makeConvergenceDeps([
+        { status: 'findings', summary: 'Round 1.', findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }] },
+        { status: 'no_findings', summary: 'Round 2 clean.', findings: [] },
+      ], {
+        implementer: makeImplementer(makeCompleteResult({ review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }] })),
+      });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+
+      await coordinator.runInitialReview({ run: makeRun(), artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(deps.implementer.implement).toHaveBeenCalledWith(
+        '/ws/spec.md',
+        WORKING_DIR,
+        expect.stringContaining('Convergence gate: initial'),
+        expect.any(Function),
+        expect.objectContaining({
+          phase: 'implementation_review_initial_proposer',
+          route: { task: 'implementation.run', role: 'proposer' },
+        }),
+      );
     });
   });
 

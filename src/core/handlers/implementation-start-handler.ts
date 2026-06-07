@@ -1,5 +1,5 @@
 import type pino from 'pino';
-import type { ImplementationAgent, AgentSessionCaptureFn, ImplementationReviewExchange } from '../../types/ai.js';
+import type { ImplementationAgent, AgentSessionCaptureFn, GateReviewExchange, ImplementationReviewExchange } from '../../types/ai.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { ImplementationReviewPublisher } from '../../types/impl-feedback-page.js';
 import { titleFromArtifactPath } from '../../types/publisher.js';
@@ -95,13 +95,14 @@ export class ImplementationStartHandler {
     let reviewedResult = result;
     if (this.deps.reviewCoordinator) {
       const captureFeedback = this.deps.journal
-        ? (exchange: ImplementationReviewExchange, captureRun: Run) => {
+        ? (exchange: ImplementationReviewExchange | GateReviewExchange, captureRun: Run) => {
+            const reviewProfile = 'review_profile' in exchange ? exchange.review_profile : exchange.critic_profile;
             for (const finding of exchange.findings) {
               void this.deps.journal!.captureFeedback({
                 id: finding.id,
                 run: captureRun,
                 target: 'implementation',
-                author_principal: `review:${exchange.review_profile.provider}:${exchange.review_profile.profile}`,
+                author_principal: `review:${reviewProfile.provider}:${reviewProfile.profile}`,
                 text: finding.finding + (finding.suggested_action ? ' | ' + finding.suggested_action : ''),
                 severity: finding.severity,
                 category: finding.category,

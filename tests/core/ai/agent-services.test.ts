@@ -1663,4 +1663,65 @@ describe('AgentServiceTelemetry captureSession callback', () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  test('implementation.run uses telemetry.route when provided (proposer route override)', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-route-override-'));
+    try {
+      const calls: import('../../../src/types/ai.js').AgentRunRequest[] = [];
+      const specPath = join(workspace, 'spec.md');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(specPath, '# Spec', 'utf8');
+
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'proposer done', review_summary: { changes: [], confirm: [] }, testing_steps: [], resolved_feedback_items: [] }), 'utf8');
+      });
+
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+      const proposerRoute = { task: 'implementation.run' as const, role: 'proposer' };
+      await service.implement(specPath, workspace, undefined, undefined, { route: proposerRoute });
+
+      expect(calls[0].route).toEqual(proposerRoute);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation.run captureSession receives role, round, and gate from telemetry', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-session-meta-'));
+    try {
+      const captures: Array<Record<string, unknown>> = [];
+      const specPath = join(workspace, 'spec.md');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(specPath, '# Spec', 'utf8');
+
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'done', review_summary: { changes: [], confirm: [] }, testing_steps: [], resolved_feedback_items: [] }), 'utf8');
+      });
+
+      const captureSession = vi.fn((data: Record<string, unknown>) => captures.push(data));
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+      await service.implement(specPath, workspace, undefined, undefined, {
+        captureSession,
+        role: 'proposer',
+        round: 2,
+        gate: 'initial',
+      });
+
+      expect(captureSession).toHaveBeenCalledOnce();
+      expect(captures[0]['role']).toBe('proposer');
+      expect(captures[0]['round']).toBe(2);
+      expect(captures[0]['gate']).toBe('initial');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
