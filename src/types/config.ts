@@ -65,9 +65,15 @@ export interface SpecReviewPolicy {
   template_conformance?: boolean;
 }
 
+export type ImplementationReviewConvergenceDepth = 'build_only' | 'layout' | 'public_api' | 'full';
+export type ImplementationReviewFeedbackDepth = ImplementationReviewConvergenceDepth | 'inherit';
+
 export interface ImplementationReviewConvergencePolicy {
   enabled?: boolean;
   allow_same_model?: boolean;
+  depth?: ImplementationReviewConvergenceDepth;
+  feedback_depth?: ImplementationReviewFeedbackDepth;
+  max_model_sessions_per_run?: number;
 }
 
 export interface ImplementationReviewPolicy {

@@ -9,6 +9,12 @@ import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
+import {
+  altitudesForDepth,
+  resolveFeedbackDepth,
+  type ResolvedImplementationConvergencePolicy,
+} from '../ai/layered-convergence-policy.js';
+import { ModelSessionBudget, type BudgetWriter } from '../journal/model-session-budget.js';
 
 export interface ImplementationFeedbackDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -19,8 +25,10 @@ export interface ImplementationFeedbackDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error' | 'debug'>;
   branchGuard?: BranchGuard;
-  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
+  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview' | 'runLayeredImplementation'>;
+  convergencePolicy?: ResolvedImplementationConvergencePolicy;
   journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
+  budgetWriter?: BudgetWriter;
 }
 
 export type ImplementationFeedbackResult =
@@ -41,6 +49,15 @@ export class ImplementationFeedbackHandler {
     const additionalContext = await this.additionalContext(run, feedback, routingStage);
     if (additionalContext.status === 'failed') return { status: 'failed' };
 
+    const sessionBudget = this.deps.convergencePolicy
+      ? new ModelSessionBudget({
+          runId: run.id,
+          requestId: run.request_id,
+          limit: this.deps.convergencePolicy.max_model_sessions_per_run,
+          writer: this.deps.budgetWriter ?? { append: async () => {} },
+        })
+      : undefined;
+
     const onProgress = (message: string): Promise<void> =>
       this.deps.postMessage(feedback.conversation, message).catch(err => {
         this.deps.logger.warn(
@@ -55,6 +72,17 @@ export class ImplementationFeedbackHandler {
 
     const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
 
+    let implReservationId: string | undefined;
+    if (sessionBudget) {
+      try {
+        const r = await sessionBudget.reserve({ gate: 'initial', role: 'proposer', round: 1, passKind: 'feedback' });
+        implReservationId = r.session_id;
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return { status: 'failed' };
+      }
+    }
+
     let result;
     try {
       const captureSession: AgentSessionCaptureFn | undefined = this.deps.journal
@@ -67,7 +95,13 @@ export class ImplementationFeedbackHandler {
         onProgress,
         { run_id: run.id, request_id: run.request_id, onAgentRequest, captureSession },
       );
+      if (sessionBudget && implReservationId) {
+        await sessionBudget.complete(implReservationId, 'ok').catch(() => {});
+      }
     } catch (err) {
+      if (sessionBudget && implReservationId) {
+        await sessionBudget.complete(implReservationId, 'failed').catch(() => {});
+      }
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };
     }
@@ -94,14 +128,20 @@ export class ImplementationFeedbackHandler {
               // GateReviewExchange — emit feedback per finding with gate-aware disposition
               const criticProfile = exchange.critic_profile;
               for (const finding of exchange.findings) {
+                const layered = finding.layered;
                 const response = exchange.responses.find(r => r.id === finding.id);
                 const isBlocking = finding.severity === 'blocker' || finding.severity === 'warning';
-                const disposition =
-                  response?.disposition === 'fixed' ? 'addressed' as const
-                  : response?.disposition === 'declined' ? 'wont_fix' as const
-                  : exchange.converged || finding.severity === 'info' ? 'addressed' as const
-                  : isBlocking ? 'open' as const
-                  : 'addressed' as const;
+                let disposition: 'open' | 'addressed' | 'wont_fix';
+                if (layered?.disposition === 'filtered_note' || layered?.disposition === 'info') {
+                  disposition = 'addressed';
+                } else {
+                  disposition =
+                    response?.disposition === 'fixed' ? 'addressed' as const
+                    : response?.disposition === 'declined' ? 'wont_fix' as const
+                    : exchange.converged || finding.severity === 'info' ? 'addressed' as const
+                    : isBlocking ? 'open' as const
+                    : 'addressed' as const;
+                }
                 void this.deps.journal!.captureFeedback({
                   id: `${exchange.id}:${finding.id}`,
                   run: captureRun,
@@ -112,6 +152,14 @@ export class ImplementationFeedbackHandler {
                   severity: finding.severity,
                   category: finding.category,
                   disposition,
+                  ...(layered?.disposition === 'filtered_note' ? {
+                    note_kind: 'filtered_layered_finding' as const,
+                    filter_reason: layered.filter_reason,
+                    scope: layered.scope,
+                    reason_code: layered.reason_code,
+                    original_severity: layered.original_severity,
+                    original_category: layered.original_category,
+                  } : {}),
                 }).catch(() => {});
               }
             } else {
@@ -132,7 +180,7 @@ export class ImplementationFeedbackHandler {
             }
           }
         : undefined;
-      reviewedResult = await this.deps.reviewCoordinator.runInitialReview({
+      const reviewParams = {
         run,
         artifact_path: localPath,
         implementation_result: result,
@@ -141,7 +189,20 @@ export class ImplementationFeedbackHandler {
         onAgentRequest,
         captureSession: captureSessionForReview,
         captureFeedback,
-      });
+        sessionBudget,
+      };
+      const policy = this.deps.convergencePolicy;
+      // Feedback uses feedback_depth (defaulting to build_only) to choose altitudes.
+      const feedbackDepth = policy
+        ? resolveFeedbackDepth(policy.feedback_depth, policy.depth)
+        : 'build_only';
+      const useLayered =
+        policy?.enabled &&
+        feedbackDepth !== 'build_only' &&
+        typeof this.deps.reviewCoordinator.runLayeredImplementation === 'function';
+      reviewedResult = useLayered
+        ? await this.deps.reviewCoordinator.runLayeredImplementation!(reviewParams, { altitudes: altitudesForDepth(feedbackDepth) })
+        : await this.deps.reviewCoordinator.runInitialReview(reviewParams);
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');
         try {

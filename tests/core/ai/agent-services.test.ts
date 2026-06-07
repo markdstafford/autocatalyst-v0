@@ -19,6 +19,9 @@ import {
   parseSpecReviewResult,
   drainAgentRunner,
   validateRequiredResultFile,
+  buildLayeredProposePrompt,
+  buildLayeredCritiquePrompt,
+  buildLayeredRevisePrompt,
 } from '../../../src/core/ai/agent-services.js';
 import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
 import { createLogger } from '../../../src/core/logger.js';
@@ -1723,5 +1726,130 @@ describe('AgentServiceTelemetry captureSession callback', () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildLayeredProposePrompt', () => {
+  it('layout prompt includes altitude name and forbids signatures, bodies, and tests', () => {
+    const prompt = buildLayeredProposePrompt({
+      gate: 'layout',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+    });
+
+    expect(prompt).toContain('Layout altitude');
+    expect(prompt).toContain('skeleton files, modules, classes');
+    expect(prompt).toContain('Do not add function signatures');
+    expect(prompt).toContain('TODO(gate-layout)');
+  });
+
+  it('public_api prompt instructs proposer to write exported signatures only', () => {
+    const prompt = buildLayeredProposePrompt({
+      gate: 'public_api',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+    });
+
+    expect(prompt).toContain('Public API altitude');
+    expect(prompt).toContain('exported signatures, public types');
+    expect(prompt).toContain('Do not add private helper signatures');
+    expect(prompt).toContain('TODO(gate-public_api)');
+  });
+
+  it('private_api prompt instructs proposer to write internal helper signatures only', () => {
+    const prompt = buildLayeredProposePrompt({
+      gate: 'private_api',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+    });
+
+    expect(prompt).toContain('Private API altitude');
+    expect(prompt).toContain('internal helper signatures');
+    expect(prompt).toContain('Do not add bodies or tests');
+    expect(prompt).toContain('TODO(gate-private_api)');
+  });
+
+  it('build prompt instructs proposer to implement bodies and preserve upper contracts', () => {
+    const prompt = buildLayeredProposePrompt({
+      gate: 'build',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+    });
+
+    expect(prompt).toContain('Build altitude');
+    expect(prompt).toContain('function bodies, tests');
+    expect(prompt).toContain('Preserve the converged');
+  });
+});
+
+describe('buildLayeredCritiquePrompt', () => {
+  it('early critic prompt says missing bodies are expected and out of scope', () => {
+    const prompt = buildLayeredCritiquePrompt({
+      gate: 'public_api',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+      diffContext: 'diff content',
+      changedFiles: ['src/a.ts'],
+      round: 1,
+      allowedCategories: ['maintainability', 'docs', 'security'],
+    });
+
+    expect(prompt).toContain('You are reviewing a public_api-only diff');
+    expect(prompt).toContain('Do not file missing-body, missing-test, or missing-implementation findings');
+    expect(prompt).toContain('"scope"');
+    expect(prompt).toContain('"reason_code"');
+  });
+
+  it('layout critic prompt mentions allowed categories', () => {
+    const prompt = buildLayeredCritiquePrompt({
+      gate: 'layout',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+      diffContext: '',
+      changedFiles: [],
+      round: 1,
+      allowedCategories: ['maintainability', 'docs'],
+    });
+
+    expect(prompt).toContain('maintainability');
+    expect(prompt).toContain('docs');
+  });
+
+  it('build critic prompt does not include early gate restrictions', () => {
+    const prompt = buildLayeredCritiquePrompt({
+      gate: 'build',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+      diffContext: 'diff',
+      changedFiles: ['src/a.ts'],
+      round: 2,
+      allowedCategories: ['correctness', 'test', 'security', 'maintainability', 'docs', 'pr_readiness'],
+    });
+
+    expect(prompt).not.toContain('Do not file missing-body');
+    expect(prompt).toContain('correctness');
+    expect(prompt).toContain('converged layout');
+  });
+});
+
+describe('buildLayeredRevisePrompt', () => {
+  it('includes findings list and gate contract reminder', () => {
+    const prompt = buildLayeredRevisePrompt({
+      gate: 'layout',
+      artifactPath: 'spec.md',
+      workingDirectory: '/repo',
+      findings: [{
+        id: 'LAYOUT-1',
+        severity: 'blocker',
+        category: 'maintainability',
+        finding: 'New file duplicates existing boundary',
+        suggested_action: 'Move skeleton into existing module',
+      }],
+    });
+
+    expect(prompt).toContain('LAYOUT-1');
+    expect(prompt).toContain('New file duplicates existing boundary');
+    expect(prompt).toContain('Move skeleton into existing module');
+    expect(prompt).toContain('Layout altitude contract');
   });
 });

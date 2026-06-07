@@ -605,4 +605,94 @@ describe('ImplementationFeedbackHandler with reviewCoordinator', () => {
     expect(run.last_agent_request_at).toBe('2026-01-02T00:00:00.000Z');
     expect(deps.persist).toHaveBeenCalled();
   });
+
+  it('uses feedback_depth to choose altitudes for runLayeredImplementation', async () => {
+    const coord = {
+      runInitialReview: vi.fn().mockResolvedValue({ status: 'complete', summary: 'unused', testing_instructions: 'unused' }),
+      runLayeredImplementation: vi.fn().mockResolvedValue({ status: 'complete', summary: 'ok', testing_instructions: 'npm test' }),
+    };
+    const { handler } = makeHandler({
+      reviewCoordinator: coord,
+      convergencePolicy: {
+        enabled: true,
+        allow_same_model: false,
+        depth: 'full',
+        feedback_depth: 'layout',
+        max_model_sessions_per_run: 24,
+      },
+    });
+    await handler.handle(makeRun(), makeFeedback(), 'reviewing_implementation');
+    expect(coord.runLayeredImplementation).toHaveBeenCalledWith(
+      expect.any(Object),
+      { altitudes: ['layout', 'build'] },
+    );
+    expect(coord.runInitialReview).not.toHaveBeenCalled();
+  });
+
+  it('defaults to build_only behavior when no convergencePolicy is provided', async () => {
+    const coord = {
+      runInitialReview: vi.fn().mockResolvedValue({ status: 'complete', summary: 'ok', testing_instructions: 'npm test' }),
+      runLayeredImplementation: vi.fn().mockResolvedValue({ status: 'complete', summary: 'ok', testing_instructions: 'npm test' }),
+    };
+    const { handler } = makeHandler({ reviewCoordinator: coord });
+    await handler.handle(makeRun(), makeFeedback(), 'reviewing_implementation');
+    expect(coord.runInitialReview).toHaveBeenCalled();
+    expect(coord.runLayeredImplementation).not.toHaveBeenCalled();
+  });
+});
+
+describe('ImplementationFeedbackHandler model-session budget enforcement', () => {
+  it('fails the run before calling implementer when max_model_sessions_per_run is 0', async () => {
+    const appendSpy = vi.fn().mockResolvedValue(undefined);
+    const { handler, deps } = makeHandler({
+      convergencePolicy: {
+        enabled: true,
+        allow_same_model: false,
+        depth: 'build_only',
+        feedback_depth: 'build_only',
+        max_model_sessions_per_run: 0,
+      },
+      budgetWriter: { append: appendSpy },
+    });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.implementer.implement).not.toHaveBeenCalled();
+    expect(deps.failRun).toHaveBeenCalled();
+  });
+
+  it('passes an exhausted sessionBudget to the coordinator when limit is 1', async () => {
+    const appendSpy = vi.fn().mockResolvedValue(undefined);
+    let capturedBudget: { used(): number; limit(): number } | undefined;
+    const coord = {
+      runInitialReview: vi.fn().mockImplementation(async (params: { sessionBudget?: { used(): number; limit(): number } }) => {
+        capturedBudget = params.sessionBudget;
+        return {
+          status: 'complete',
+          summary: 'Reviewed ok.',
+          testing_instructions: 'npm test',
+        };
+      }),
+    };
+    const { handler } = makeHandler({
+      reviewCoordinator: coord,
+      convergencePolicy: {
+        enabled: true,
+        allow_same_model: false,
+        depth: 'build_only',
+        feedback_depth: 'build_only',
+        max_model_sessions_per_run: 1,
+      },
+      budgetWriter: { append: appendSpy },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    expect(capturedBudget).toBeDefined();
+    expect(capturedBudget!.used()).toBe(1);
+    expect(capturedBudget!.limit()).toBe(1);
+  });
 });

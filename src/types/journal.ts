@@ -15,6 +15,8 @@ import type { Intent } from './intent.js';
 import type { Run, RunStage } from './runs.js';
 
 export type JournalStream = 'messages' | 'sessions' | 'feedback' | 'run-events';
+
+export type JournalSessionRecordKind = 'model_session_reserved' | 'model_session_completed';
 export const JOURNAL_STREAMS: JournalStream[] = ['messages', 'sessions', 'feedback', 'run-events'];
 
 /** Raw token counts only. Pricing, usd, rate tables, and cost rollups are intentionally out of scope. */
@@ -81,6 +83,12 @@ export interface JournalSessionRecord extends JournalBaseRecord {
   tool_results: number | null;
   outcome: JournalSessionOutcome;
   runner: JournalRunnerName;
+  /** Optional fields for durable model-session budget reservations (layered-diff convergence). */
+  record_kind?: JournalSessionRecordKind;
+  session_id?: string;
+  reservation_seq?: number;
+  budget_limit?: number;
+  pass_kind?: 'initial' | 'feedback' | 'final';
 }
 
 export interface JournalFeedbackThreadItem {
@@ -105,6 +113,13 @@ export interface JournalFeedbackRecord extends JournalBaseRecord {
   category: JournalFeedbackCategory;
   disposition: JournalFeedbackDisposition;
   thread: JournalFeedbackThreadItem[];
+  // Additive fields for layered filtered findings — optional for backward compatibility
+  note_kind?: 'filtered_layered_finding';
+  filter_reason?: string; // LayeredFindingFilterReason
+  scope?: string; // LayeredFindingScope
+  reason_code?: string; // LayeredFindingReasonCode
+  original_severity?: string; // ImplementationReviewFindingSeverity
+  original_category?: string; // ImplementationReviewFindingCategory
 }
 
 export interface JournalRunEventRecord extends JournalBaseRecord {

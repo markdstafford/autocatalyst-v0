@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
+import { ModelSessionBudget } from '../../../src/core/journal/model-session-budget.js';
 import type { AgentRunner, AgentRoutingPolicy, ImplementationAgent, ImplementationResult, ImplementationReviewResult, AgentProfile, GateReviewExchange } from '../../../src/types/ai.js';
 import type { Run } from '../../../src/types/runs.js';
 
@@ -58,6 +59,26 @@ function makeImplementer(result: ImplementationResult = makeCompleteResult()): P
   return { implement: vi.fn().mockResolvedValue(result) };
 }
 
+function makeCheckpointFn() {
+  return vi.fn().mockImplementation(({ gate }: { gate: string }) =>
+    Promise.resolve({ strategy: 'internal_ref' as const, ref: `refs/autocatalyst/runs/run-001/${gate}/1`, commit: 'abc123', gate }),
+  );
+}
+
+function makeGateContextFn(diffOverride = '') {
+  return vi.fn().mockImplementation(({ gate, base_ref }: { gate: string; base_ref: string }) =>
+    Promise.resolve({ gate, base_ref, diff: diffOverride, changed_files: [], diff_byte_count: 0 }),
+  );
+}
+
+function makeContractValidatorFn(valid = true) {
+  return vi.fn().mockResolvedValue({ valid, violations: [], unsupported_files: [] });
+}
+
+function makeBuildContractFn(valid = true) {
+  return vi.fn().mockResolvedValue({ valid, drift: [], unsupported_files: [] });
+}
+
 function makeDeps(reviewResult: ImplementationReviewResult = { status: 'no_findings', summary: 'Looks good.', findings: [] }, overrides: Record<string, unknown> = {}) {
   const reviewJson = JSON.stringify(reviewResult);
   return {
@@ -68,6 +89,10 @@ function makeDeps(reviewResult: ImplementationReviewResult = { status: 'no_findi
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
     logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     readFile: vi.fn().mockResolvedValue(reviewJson),
+    createGitSnapshotCheckpoint: makeCheckpointFn(),
+    buildGateContext: makeGateContextFn(),
+    validateAltitudeContract: makeContractValidatorFn(),
+    compareBuildToAcceptedContracts: makeBuildContractFn(),
     ...overrides,
   };
 }
@@ -774,5 +799,758 @@ describe('ImplementationReviewCoordinator', () => {
         expect.any(String),
       );
     });
+  });
+
+  describe('runLayeredImplementation', () => {
+    it('returns single-pass behavior when convergence is disabled', async () => {
+      const deps = makeDeps();
+      deps.policy = { ...deps.policy, convergence: { enabled: false, allow_same_model: false } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const original = makeCompleteResult();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: original, working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+      expect(result).toBe(original);
+      // Used legacy review_exchanges, not gate_exchanges
+      expect(run.review_exchanges).toHaveLength(1);
+      expect((run as Record<string, unknown>)['gate_exchanges']).toBeUndefined();
+    });
+
+    it('delegates to existing build convergence for build-only depth and preserves gate: "initial"', async () => {
+      let callCount = 0;
+      const readFile = vi.fn().mockImplementation(async () => {
+        const result = callCount === 0
+          ? { status: 'no_findings', summary: 'Round 1 clean.', findings: [] }
+          : { status: 'no_findings', summary: 'unused', findings: [] };
+        callCount++;
+        return JSON.stringify(result);
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(1);
+      expect(run.gate_exchanges![0].gate).toBe('initial'); // build-only preserves "initial"
+    });
+
+    it('for layered depth, runs altitudes in order and persists altitude gate names', async () => {
+      // Two altitudes, each converges on first round (no_findings)
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(2);
+      expect(run.gate_exchanges![0].gate).toBe('layout');
+      expect(run.gate_exchanges![1].gate).toBe('build');
+    });
+
+    it('depth: public_api runs layout, public_api, then build in order', async () => {
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'public_api', 'build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(3);
+      expect(run.gate_exchanges!.map(g => g.gate)).toEqual(['layout', 'public_api', 'build']);
+    });
+
+    it('depth: full runs all four altitudes in order', async () => {
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'public_api', 'private_api', 'build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(4);
+      expect(run.gate_exchanges!.map(g => g.gate)).toEqual(['layout', 'public_api', 'private_api', 'build']);
+    });
+
+    it('fails immediately when an early altitude does not converge', async () => {
+      // layout: blocker on round 1 with max_initial_rounds=1 → fails
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'findings', summary: 'Blocked.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Bad layout.', scope: 'current_altitude', reason_code: 'layout_boundary' }] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+      expect(result.status).toBe('failed');
+      // Should not have run the build altitude after layout failed
+      expect(run.gate_exchanges).toHaveLength(1);
+      expect(run.gate_exchanges![0].gate).toBe('layout');
+      expect(run.gate_exchanges![0].converged).toBe(false);
+    });
+  });
+
+  describe('runLayeredImplementation — telemetry and progress', () => {
+    function makeLayeredDeps(overrides: Record<string, unknown> = {}) {
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile, ...overrides });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      return deps;
+    }
+
+    it('logs implementation.layered.started with run_id, depth, enabled_altitudes, and model_session_budget', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const started = infoCalls.find(l => l['event'] === 'implementation.layered.started');
+
+      expect(started).toBeDefined();
+      expect(started!['run_id']).toBe('run-001');
+      expect(started!['enabled_altitudes']).toEqual(['layout', 'build']);
+      expect(typeof started!['model_session_budget']).toBe('number');
+    });
+
+    it('logs implementation.layer.started for each named altitude', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const layerStarted = infoCalls.filter(l => l['event'] === 'implementation.layer.started');
+
+      // Should have one layer.started per altitude
+      expect(layerStarted).toHaveLength(2);
+      expect(layerStarted[0]!['gate']).toBe('layout');
+      expect(layerStarted[1]!['gate']).toBe('build');
+    });
+
+    it('logs implementation.layer.completed when altitude converges', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const layerCompleted = infoCalls.filter(l => l['event'] === 'implementation.layer.completed');
+
+      expect(layerCompleted).toHaveLength(2);
+      expect(layerCompleted[0]!['gate']).toBe('layout');
+      expect(typeof layerCompleted[0]!['elapsed_ms']).toBe('number');
+    });
+
+    it('progress message includes depth information when layered mode is activated', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const progressMessages: string[] = [];
+      const onProgress = vi.fn().mockImplementation((msg: string) => { progressMessages.push(msg); return Promise.resolve(); });
+
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const depthMsg = progressMessages.find(m => m.includes('Layered implementation enabled'));
+      expect(depthMsg).toBeDefined();
+      expect(depthMsg).toContain('layout+build');
+    });
+
+    it('progress message for altitude start includes altitude label and proposer profile', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const progressMessages: string[] = [];
+      const onProgress = vi.fn().mockImplementation((msg: string) => { progressMessages.push(msg); return Promise.resolve(); });
+
+      await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      const layoutMsg = progressMessages.find(m => m.includes('Layout pass started'));
+      expect(layoutMsg).toBeDefined();
+    });
+
+    it('progress callback that throws does not alter review outcome', async () => {
+      const deps = makeLayeredDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      // onProgress throws every time
+      const onProgress = vi.fn().mockRejectedValue(new Error('progress delivery failed'));
+
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      // Review should still succeed despite progress failures
+      expect(result.status).toBe('complete');
+      // progress_failed should be logged, not thrown
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'progress_failed' }),
+        expect.any(String),
+      );
+    });
+
+    it('progress failure in sendProgress does not propagate as exception', async () => {
+      // Test specifically the sendProgress path inside the convergence loop
+      let callCount = 0;
+      const readFile = vi.fn().mockImplementation(async () => {
+        const result = callCount === 0
+          ? { status: 'findings', summary: 'Round 1.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Layout issue.' }] }
+          : { status: 'no_findings', summary: 'Clean.', findings: [] };
+        callCount++;
+        return JSON.stringify(result);
+      });
+      const deps = makeDeps(undefined, {
+        readFile,
+        implementer: makeImplementer(makeCompleteResult({ review_responses: [{ id: 'L1', disposition: 'fixed', response: 'Fixed.' }] })),
+      });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const onProgress = vi.fn().mockRejectedValue(new Error('network error'));
+
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, onProgress },
+        { altitudes: ['layout', 'build'] },
+      );
+
+      expect(result.status).toBe('complete');
+    });
+  });
+});
+
+describe('runLayeredImplementation — regression: no forbidden git operations', () => {
+  it('runner.run is never called with a prompt containing checkout, push, merge, or branch-create commands', async () => {
+    const capturedPrompts: string[] = [];
+    const capturingRunner: AgentRunner = {
+      run: vi.fn().mockImplementation((params: { prompt: string }) => {
+        capturedPrompts.push(params.prompt);
+        return (async function* () {})();
+      }),
+    };
+    const readFile = vi.fn().mockImplementation(async () => {
+      return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+    });
+    const deps = makeDeps(undefined, { runner: capturingRunner, readFile });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    for (const prompt of capturedPrompts) {
+      // No prompt should instruct the agent to run forbidden git operations
+      expect(prompt).not.toMatch(/git\s+checkout/i);
+      expect(prompt).not.toMatch(/git\s+push/i);
+      expect(prompt).not.toMatch(/git\s+merge/i);
+      expect(prompt).not.toMatch(/git\s+branch\s+-[cCmM]/i);
+      expect(prompt).not.toMatch(/gh pr create/i);
+    }
+  });
+
+  it('early altitude prompts instruct the critic not to file missing-body or missing-test findings', async () => {
+    const capturedPrompts: Map<number, string> = new Map();
+    let callIndex = 0;
+    const capturingRunner: AgentRunner = {
+      run: vi.fn().mockImplementation((params: { prompt: string }) => {
+        capturedPrompts.set(callIndex++, params.prompt);
+        return (async function* () {})();
+      }),
+    };
+    const readFile = vi.fn().mockImplementation(async () => {
+      return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+    });
+    const deps = makeDeps(undefined, { runner: capturingRunner, readFile });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    // layout (call 0) and public_api (call 1) prompts must include the early-gate restriction
+    const layoutPrompt = capturedPrompts.get(0);
+    const publicApiPrompt = capturedPrompts.get(1);
+    const buildPrompt = capturedPrompts.get(2);
+
+    expect(layoutPrompt).toBeDefined();
+    expect(layoutPrompt).toContain('Do not file missing-body, missing-test, or missing-implementation findings');
+
+    expect(publicApiPrompt).toBeDefined();
+    expect(publicApiPrompt).toContain('Do not file missing-body, missing-test, or missing-implementation findings');
+
+    // build prompt must NOT contain the early-gate restriction
+    expect(buildPrompt).toBeDefined();
+    expect(buildPrompt).not.toContain('Do not file missing-body');
+  });
+
+  it('early altitude proposer prompt does not contain build/test run instructions', async () => {
+    // Criteria 8: the proposer (implementer) at early altitudes must stay within
+    // the altitude contract. When the layout critic finds a blocker, the coordinator
+    // calls implementer.implement with buildLayeredRevisePrompt, which restricts work
+    // to the current altitude and must not instruct the agent to run npm test, build, or lint.
+    const capturedProposerPrompts: string[] = [];
+    const capturingImplementer: Pick<ImplementationAgent, 'implement'> = {
+      implement: vi.fn().mockImplementation((_specPath: string, _workDir: string, prompt: string) => {
+        capturedProposerPrompts.push(prompt);
+        // Return complete with a review_responses entry so convergence proceeds
+        return Promise.resolve(makeCompleteResult({
+          review_responses: [{ id: 'L1', disposition: 'fixed', response: 'Fixed layout.' }],
+        }));
+      }),
+    };
+    let callCount = 0;
+    const readFile = vi.fn().mockImplementation(async () => {
+      // Round 1: layout blocker → triggers proposer revision; Round 2: clean
+      const result = callCount === 0
+        ? { status: 'findings', summary: 'Blocked.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Bad layout.', scope: 'current_altitude', reason_code: 'layout_boundary' }] }
+        : { status: 'no_findings', summary: 'Clean.', findings: [] };
+      callCount++;
+      return JSON.stringify(result);
+    });
+    const deps = makeDeps(undefined, { readFile, implementer: capturingImplementer });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'build'] },
+    );
+
+    // The proposer was called during the layout revise round
+    expect(capturedProposerPrompts.length).toBeGreaterThanOrEqual(1);
+    const layoutRevisePrompt = capturedProposerPrompts[0]!;
+
+    // Must not instruct the agent to run build/test/lint commands
+    expect(layoutRevisePrompt).not.toMatch(/npm\s+(test|run\s+build|run\s+lint)/i);
+    expect(layoutRevisePrompt).not.toMatch(/yarn\s+(test|build|lint)/i);
+    expect(layoutRevisePrompt).not.toMatch(/pnpm\s+(test|build|lint)/i);
+
+    // Must include the altitude-contract restriction (stay within current altitude)
+    expect(layoutRevisePrompt).toContain('altitude contract');
+  });
+
+  it('build altitude proposer prompt includes instructions to implement bodies and tests', async () => {
+    // Criteria 9: the proposer at build altitude must be mandated to address
+    // test coverage, code, and docs — not just restricted to a skeleton altitude.
+    // buildImplementerResponsePrompt (used for build) includes "code/tests/docs" and
+    // requests testing_steps, whereas early gates use the altitude-limited revise prompt.
+    const capturedProposerPrompts: string[] = [];
+    const capturingImplementer: Pick<ImplementationAgent, 'implement'> = {
+      implement: vi.fn().mockImplementation((_specPath: string, _workDir: string, prompt: string) => {
+        capturedProposerPrompts.push(prompt);
+        return Promise.resolve(makeCompleteResult({
+          review_responses: [{ id: 'B1', disposition: 'fixed', response: 'Added tests.' }],
+        }));
+      }),
+    };
+    let callCount = 0;
+    const readFile = vi.fn().mockImplementation(async () => {
+      // Round 1 of build: blocker → triggers proposer revision; Round 2: clean
+      const result = callCount === 0
+        ? { status: 'findings', summary: 'Missing tests.', findings: [{ id: 'B1', severity: 'blocker', category: 'test', finding: 'No tests written.' }] }
+        : { status: 'no_findings', summary: 'Clean.', findings: [] };
+      callCount++;
+      return JSON.stringify(result);
+    });
+    const deps = makeDeps(undefined, { readFile, implementer: capturingImplementer });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['build'] },
+    );
+
+    // The proposer was called during the build revise round
+    expect(capturedProposerPrompts.length).toBeGreaterThanOrEqual(1);
+    const buildRevisePrompt = capturedProposerPrompts[0]!;
+
+    // Build proposer must include test/docs mandate (from buildImplementerResponsePrompt)
+    expect(buildRevisePrompt).toMatch(/code\/tests\/docs|tests?|testing_steps/i);
+
+    // Build proposer must NOT contain the early-altitude altitude-contract restriction
+    // (which would incorrectly limit the proposer to skeleton-only work)
+    expect(buildRevisePrompt).not.toContain('do not add lower-altitude work');
+  });
+
+  it('convergence disabled falls back to single-pass and review_exchanges is used, not gate_exchanges', async () => {
+    const freshDeps = makeDeps();
+    freshDeps.policy = { ...freshDeps.policy, convergence: { enabled: false, allow_same_model: false } };
+    const coordinator = new ImplementationReviewCoordinator(freshDeps);
+    const run = makeRun();
+    const original = makeCompleteResult();
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: original, working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    // Single-pass behavior: review_exchanges is populated, gate_exchanges is not
+    expect(result).toBe(original);
+    expect(run.review_exchanges).toHaveLength(1);
+    expect((run as Record<string, unknown>)['gate_exchanges']).toBeUndefined();
+    // Runner called at most once (single-pass review)
+    expect(freshDeps.runner.run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runLayeredImplementation — model-session budget enforcement', () => {
+  it('fails before critic execution when budget is exhausted', async () => {
+    // Budget with limit 0 means no sessions can be reserved
+    const w = { append: vi.fn().mockResolvedValue(undefined) };
+    const sessionBudget = new ModelSessionBudget({ runId: 'run-1', requestId: 'req-1', limit: 0, writer: w });
+
+    const findingsResult: ImplementationReviewResult = {
+      status: 'has_findings',
+      summary: 'Blockers found.',
+      findings: [{ id: 'F1', severity: 'blocker', category: 'correctness', finding: 'Missing impl.' }],
+    };
+    const deps = makeDeps(findingsResult);
+    deps.policy = { ...deps.policy, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun({ id: 'run-1' });
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, sessionBudget },
+      { altitudes: ['layout', 'build'] },
+    );
+
+    expect(result.status).toBe('failed');
+    expect((result as { status: 'failed'; error: string }).error).toMatch(/budget exhausted/i);
+    // Runner must NOT have been called (budget rejected before provider call)
+    expect(deps.runner.run).not.toHaveBeenCalled();
+  });
+});
+
+describe('runLayeredImplementation — wiring integration', () => {
+  it('calls buildGateContext per altitude and per round instead of getGitDiff', async () => {
+    // Each altitude critic round must call buildGateContext with the correct gate,
+    // not the legacy getGitDiff path.
+    const buildGateContext = makeGateContextFn('diff-content');
+    const deps = makeDeps(undefined, { buildGateContext });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    // buildGateContext must be called once per altitude (one round each, all converge)
+    expect(buildGateContext).toHaveBeenCalledTimes(3);
+    const calls = buildGateContext.mock.calls.map((c: [{ gate: string }]) => c[0].gate);
+    expect(calls).toContain('layout');
+    expect(calls).toContain('public_api');
+    expect(calls).toContain('build');
+  });
+
+  it('buildGateContext receives the same cumulative pass base_ref for all altitudes', async () => {
+    // Spec §Diff context strategy: base_ref is the pre-implementation pass base captured
+    // once before any altitude writes files. All altitudes diff cumulatively from this
+    // same base so the critic at each altitude sees the full accumulated diff.
+    // Checkpoint refs are stored only for build contract preservation, not passed to
+    // buildGateContext — they must NOT become the base_ref for later altitudes.
+    const checkpointFn = vi.fn()
+      .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/autocatalyst/runs/run-001/layout/1', commit: 'layout-sha', gate: 'layout' })
+      .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/autocatalyst/runs/run-001/public_api/2', commit: 'public-sha', gate: 'public_api' });
+    const buildGateContext = makeGateContextFn('');
+    const deps = makeDeps(undefined, { createGitSnapshotCheckpoint: checkpointFn, buildGateContext });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    const calls = buildGateContext.mock.calls as Array<[{ gate: string; base_ref: string }]>;
+    const layoutCall = calls.find(([c]) => c.gate === 'layout');
+    const publicApiCall = calls.find(([c]) => c.gate === 'public_api');
+    const buildCall = calls.find(([c]) => c.gate === 'build');
+
+    expect(layoutCall).toBeDefined();
+    expect(publicApiCall).toBeDefined();
+    expect(buildCall).toBeDefined();
+
+    // All three altitudes receive the same pass base ref (not a checkpoint ref)
+    expect(layoutCall![0].base_ref).not.toContain('refs/autocatalyst');
+    expect(publicApiCall![0].base_ref).not.toContain('refs/autocatalyst');
+    expect(buildCall![0].base_ref).not.toContain('refs/autocatalyst');
+    // public_api and build must match layout's base_ref (same pass base for all)
+    expect(publicApiCall![0].base_ref).toBe(layoutCall![0].base_ref);
+    expect(buildCall![0].base_ref).toBe(layoutCall![0].base_ref);
+  });
+
+  it('createGitSnapshotCheckpoint is called after each converged non-build altitude', async () => {
+    const checkpointFn = makeCheckpointFn();
+    const deps = makeDeps(undefined, { createGitSnapshotCheckpoint: checkpointFn });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    // Checkpoints for layout and public_api only (not build)
+    expect(checkpointFn).toHaveBeenCalledTimes(2);
+    const gates = checkpointFn.mock.calls.map((c: [{ gate: string }]) => c[0].gate);
+    expect(gates).toContain('layout');
+    expect(gates).toContain('public_api');
+    expect(gates).not.toContain('build');
+  });
+
+  it('branch guard failure before checkpoint blocks checkpoint creation and the next altitude', async () => {
+    // Spec §Checkpoints and branch guard: "The branch guard runs after each proposer pass
+    // and before each checkpoint." If the guard rejects before checkpointing an altitude,
+    // the run fails before the checkpoint is created and before the next altitude starts.
+    // Sequence: layout converges (no_findings, no proposer call) → guard called before
+    // layout checkpoint → passes → checkpoint created → public_api converges → guard
+    // called before public_api checkpoint → rejects → run fails, build never starts.
+    const checkpointFn = makeCheckpointFn();
+    const branchGuard = {
+      check: vi.fn()
+        .mockResolvedValueOnce(undefined)  // before layout checkpoint — passes
+        .mockRejectedValue(new Error('branch drift detected')), // before public_api checkpoint — fails
+    };
+    const deps = makeDeps(undefined, { createGitSnapshotCheckpoint: checkpointFn, branchGuard });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    expect(result.status).toBe('failed');
+    expect((result as { status: 'failed'; error: string }).error).toMatch(/branch guard failed before public_api checkpoint/i);
+    // Layout checkpoint was created (guard passed), public_api checkpoint was NOT
+    expect(checkpointFn).toHaveBeenCalledTimes(1);
+    const checkpointedGates = checkpointFn.mock.calls.map((c: [{ gate: string }]) => c[0].gate);
+    expect(checkpointedGates).toContain('layout');
+    expect(checkpointedGates).not.toContain('public_api');
+    // layout and public_api critics ran; build was never started
+    expect(deps.runner.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('run fails if checkpoint creation fails and does not start the next altitude', async () => {
+    const checkpointFn = vi.fn().mockRejectedValue(new Error('git ref creation failed'));
+    const deps = makeDeps(undefined, { createGitSnapshotCheckpoint: checkpointFn });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'build'] },
+    );
+
+    expect(result.status).toBe('failed');
+    expect((result as { status: 'failed'; error: string }).error).toMatch(/checkpoint creation failed/i);
+    // Runner must have been called once (layout), but not a second time (public_api blocked)
+    expect(deps.runner.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('validateAltitudeContract is called for each early-altitude critic round', async () => {
+    const validateFn = makeContractValidatorFn(true);
+    const deps = makeDeps(undefined, { validateAltitudeContract: validateFn });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'private_api', 'build'] },
+    );
+
+    // validate is called for layout, public_api, private_api (not build)
+    expect(validateFn).toHaveBeenCalledTimes(3);
+    const gates = validateFn.mock.calls.map((c: [{ gate: string }]) => c[0].gate);
+    expect(gates.filter((g: string) => g === 'layout')).toHaveLength(1);
+    expect(gates.filter((g: string) => g === 'public_api')).toHaveLength(1);
+    expect(gates.filter((g: string) => g === 'private_api')).toHaveLength(1);
+    expect(gates).not.toContain('build');
+  });
+
+  it('altitude contract violations force proposer revision and skip critic that round', async () => {
+    // Round 1: validator returns violations → skip critic, run proposer
+    // Round 2: validator passes → run critic (no findings) → converge
+    let validateCallCount = 0;
+    const validateFn = vi.fn().mockImplementation(() => {
+      validateCallCount++;
+      if (validateCallCount === 1) {
+        return Promise.resolve({
+          valid: false,
+          violations: [{ id: 'ALTITUDE-CONTRACT-1', file: 'src/foo.ts', message: 'layout altitude added lower-altitude work', reason_code: 'altitude_contract_violation' }],
+          unsupported_files: [],
+        });
+      }
+      return Promise.resolve({ valid: true, violations: [], unsupported_files: [] });
+    });
+    const deps = makeDeps(undefined, { validateAltitudeContract: validateFn });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'build'] },
+    );
+
+    // Run succeeds: round 1 revision + round 2 convergence
+    expect(result.status).toBe('complete');
+    // The critic runs only on round 2 (after violations are fixed), layout only
+    expect(deps.runner.run).toHaveBeenCalledTimes(2); // round 2 layout critic + build critic
+    // The proposer was called once for the contract violation revision
+    expect(deps.implementer.implement).toHaveBeenCalledTimes(1);
+  });
+
+  it('compareBuildToAcceptedContracts is called at build altitude with upper checkpoint refs', async () => {
+    const checkpointFn = vi.fn()
+      .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/autocatalyst/runs/run-001/layout/1', commit: 'layout-sha', gate: 'layout' });
+    const compareFn = makeBuildContractFn(true);
+    const deps = makeDeps(undefined, { createGitSnapshotCheckpoint: checkpointFn, compareBuildToAcceptedContracts: compareFn });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'build'] },
+    );
+
+    // compareBuildToAcceptedContracts must be called once at the build altitude
+    expect(compareFn).toHaveBeenCalledTimes(1);
+    const callArgs = compareFn.mock.calls[0]?.[0] as { acceptedCheckpoints: Array<{ gate: string; ref: string }> };
+    expect(callArgs).toBeDefined();
+    expect(callArgs!.acceptedCheckpoints).toHaveLength(1);
+    expect(callArgs!.acceptedCheckpoints[0]!.gate).toBe('layout');
+    expect(callArgs!.acceptedCheckpoints[0]!.ref).toBe('refs/autocatalyst/runs/run-001/layout/1');
+  });
+
+  it('build contract drift forces proposer revision before reporting convergence', async () => {
+    // Round 1: critic passes (no findings) but drift detected → proposer revision
+    // Round 2: critic passes and drift check passes → converge
+    let driftCallCount = 0;
+    const compareFn = vi.fn().mockImplementation(() => {
+      driftCallCount++;
+      if (driftCallCount === 1) {
+        return Promise.resolve({
+          valid: false,
+          drift: [{ kind: 'exported_name', file: 'src/foo.ts', symbol: 'foo', message: "exported name 'foo' from layout checkpoint was removed" }],
+          unsupported_files: [],
+        });
+      }
+      return Promise.resolve({ valid: true, drift: [], unsupported_files: [] });
+    });
+    const deps = makeDeps(undefined, { compareBuildToAcceptedContracts: compareFn });
+    deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    const result = await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'build'] },
+    );
+
+    expect(result.status).toBe('complete');
+    // compareBuildToAcceptedContracts called twice (round 1: drift, round 2: clean)
+    expect(compareFn).toHaveBeenCalledTimes(2);
+    // Proposer was called once for drift revision
+    expect(deps.implementer.implement).toHaveBeenCalledTimes(1);
+  });
+
+  it('full-depth run passes the same cumulative pass base_ref to all four altitudes', async () => {
+    // Spec §Diff context strategy: the pass base_ref is captured once before the first
+    // altitude and never changes. All altitudes diff cumulatively from that same base.
+    // Checkpoint refs are stored for build contract preservation (compareBuildToAccepted-
+    // Contracts) and must not become the base_ref for any altitude's buildGateContext call.
+    const checkpointFn = vi.fn()
+      .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/ckpt/layout', commit: 'sha1', gate: 'layout' })
+      .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/ckpt/public_api', commit: 'sha2', gate: 'public_api' })
+      .mockResolvedValueOnce({ strategy: 'internal_ref' as const, ref: 'refs/ckpt/private_api', commit: 'sha3', gate: 'private_api' });
+    const gateContextFn = makeGateContextFn('');
+    const deps = makeDeps(undefined, { createGitSnapshotCheckpoint: checkpointFn, buildGateContext: gateContextFn });
+    deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+    const coordinator = new ImplementationReviewCoordinator(deps);
+    const run = makeRun();
+
+    await coordinator.runLayeredImplementation(
+      { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+      { altitudes: ['layout', 'public_api', 'private_api', 'build'] },
+    );
+
+    const calls = gateContextFn.mock.calls as Array<[{ gate: string; base_ref: string }]>;
+    expect(calls).toHaveLength(4);
+
+    const byGate = Object.fromEntries(calls.map(([c]) => [c.gate, c.base_ref]));
+
+    // No altitude should receive a checkpoint ref as its base_ref
+    for (const [gate, baseRef] of Object.entries(byGate)) {
+      expect(baseRef, `${gate} must not use a checkpoint ref as base_ref`).not.toContain('refs/ckpt');
+    }
+
+    // All four altitudes must receive the same cumulative pass base
+    const uniqueBaseRefs = new Set(Object.values(byGate));
+    expect(uniqueBaseRefs.size).toBe(1);
   });
 });

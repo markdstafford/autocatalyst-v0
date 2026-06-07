@@ -624,4 +624,83 @@ describe('ImplementationApprovalHandler with reviewCoordinator', () => {
       expect.objectContaining({ gate_exchanges: [gateExchange] }),
     );
   });
+
+  it('calls runFinalReview (not runLayeredImplementation) on final approval', async () => {
+    // The handler must always delegate to runFinalReview for the post-human-approval
+    // review. runLayeredImplementation is only used during initial implementation.
+    const coord = makeReviewCoordinator();
+    const { handler } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(coord.runFinalReview).toHaveBeenCalledTimes(1);
+    // Confirm there is no runLayeredImplementation method on the coordinator type
+    // used by the handler — it only exposes runFinalReview.
+    expect((coord as Record<string, unknown>)['runLayeredImplementation']).toBeUndefined();
+  });
+
+  it('gate_exchanges populated by final review contain gate: "final", not layered altitude gates', async () => {
+    // When convergence is enabled, the final review path must produce gate exchanges
+    // with gate: "final". Layered altitude gates (layout/public_api/private_api)
+    // must NOT appear in exchanges produced by the final review path.
+    const finalGateExchange: GateReviewExchange = {
+      id: 'gate-final-001',
+      gate: 'final',
+      round: 1,
+      created_at: new Date().toISOString(),
+      proposer_profile: { profile: 'impl-agent', provider: 'anthropic_direct' },
+      critic_profile: { profile: 'review-agent', provider: 'anthropic_direct' },
+      review_status: 'converged',
+      review_summary: 'Final review passed.',
+      findings: [],
+      responses: [],
+      converged: true,
+      requires_human_retest: true,
+    };
+
+    const coord = makeReviewCoordinator({ requires_human_retest: true });
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun({
+      impl_feedback_ref: 'feedback-page-id',
+      gate_exchanges: [finalGateExchange],
+    });
+
+    await handler.handle(run, makeFeedback());
+
+    // The gate exchange passed to the feedback page has gate: "final"
+    const updateCall = (deps.implFeedbackPage?.update as ReturnType<typeof vi.fn>).mock.calls[0];
+    const updatedPayload = updateCall?.[1] as { gate_exchanges?: GateReviewExchange[] };
+    const exchanges = updatedPayload?.gate_exchanges ?? [];
+    for (const ex of exchanges) {
+      expect(ex.gate).toBe('final');
+      expect(['layout', 'public_api', 'private_api']).not.toContain(ex.gate);
+    }
+  });
+
+  it('does not transition run to a new RunStage during final review — only to existing stages', async () => {
+    // Final review must not introduce new RunStage values. After a normal final
+    // review that passes, the handler transitions to pr_open.  After retest required,
+    // it transitions back to reviewing_implementation. Both are existing stages.
+    const coordPass = makeReviewCoordinator({ requires_human_retest: false });
+    const { handler: handlerPass, deps: depsPass } = makeHandler({ reviewCoordinator: coordPass });
+    const runPass = makeRun();
+    await handlerPass.handle(runPass, makeFeedback());
+    expect(depsPass.transition).toHaveBeenCalledWith(runPass, 'pr_open');
+
+    const coordRetest = makeReviewCoordinator({ requires_human_retest: true });
+    const { handler: handlerRetest, deps: depsRetest } = makeHandler({ reviewCoordinator: coordRetest });
+    const runRetest = makeRun();
+    await handlerRetest.handle(runRetest, makeFeedback());
+    expect(depsRetest.transition).toHaveBeenCalledWith(runRetest, 'reviewing_implementation');
+
+    // In no case does final review trigger a transition to any layered-specific stage.
+    const allTransitionArgs = [
+      ...(depsPass.transition as ReturnType<typeof vi.fn>).mock.calls,
+      ...(depsRetest.transition as ReturnType<typeof vi.fn>).mock.calls,
+    ].map(([, stage]) => stage as string);
+    for (const stage of allTransitionArgs) {
+      expect(['pr_open', 'reviewing_implementation', 'awaiting_impl_input', 'failed']).toContain(stage);
+    }
+  });
 });

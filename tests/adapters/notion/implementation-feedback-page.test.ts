@@ -1521,3 +1521,208 @@ describe('normalizeStep (via update deduplication behavior)', () => {
     expect(newStepIdx).toBeLessThan(additionalIdx);
   });
 });
+
+function makeAltitudeExchange(
+  gate: 'layout' | 'public_api' | 'private_api' | 'build',
+  round: number,
+  converged: boolean,
+  overrides: Partial<GateReviewExchange> = {},
+): GateReviewExchange {
+  return {
+    id: `${gate}-r${round}`,
+    gate,
+    round,
+    created_at: '2026-06-07T00:00:00Z',
+    proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+    critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk', model: 'gpt-5.5' },
+    review_status: converged ? 'converged' : 'addressed',
+    review_summary: converged ? 'All clear.' : 'Found findings.',
+    findings: [],
+    responses: [],
+    converged,
+    requires_human_retest: false,
+    ...overrides,
+  };
+}
+
+describe('layered altitude rendering', () => {
+  it('renders Layered implementation review when altitude gate exchanges exist', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      makeAltitudeExchange('layout', 1, true),
+      makeAltitudeExchange('public_api', 1, true),
+      makeAltitudeExchange('build', 1, true),
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(markdown).toContain('### Layered implementation review');
+    expect(markdown).toContain('#### Layout — converged');
+    expect(markdown).toContain('#### Public API — converged');
+    expect(markdown).toContain('#### Build — converged');
+    expect(markdown).not.toContain('### Layout review');
+  });
+
+  it('renders Layered implementation review in create path when altitude gate exchanges exist', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      makeAltitudeExchange('layout', 1, true),
+      makeAltitudeExchange('build', 1, true),
+    ];
+
+    await page.create(makeReviewInput({ gate_exchanges }));
+
+    const createCall = pagesCreate.mock.calls[0][0] as {
+      children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> }; paragraph?: { rich_text: Array<{ text: { content: string } }> } }>;
+    };
+    const allTexts = createCall.children.flatMap(b => {
+      if (b.type === 'heading_2') return [b.heading_2!.rich_text[0].text.content];
+      if (b.type === 'paragraph') return [b.paragraph!.rich_text[0].text.content];
+      return [];
+    });
+    const combined = allTexts.join('\n');
+    expect(combined).toContain('Layered implementation review');
+    expect(combined).toContain('Layout — converged');
+    expect(combined).toContain('Build — converged');
+  });
+
+  it('renders early-altitude note about non-compiling code for layout, public_api, private_api but not build', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      makeAltitudeExchange('layout', 1, true),
+      makeAltitudeExchange('public_api', 1, true),
+      makeAltitudeExchange('private_api', 1, true),
+      makeAltitudeExchange('build', 1, true),
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    // Early altitudes get the note
+    expect(markdown).toContain('Intermediate code at this altitude may not compile; review was by diff context.');
+    // Count occurrences: should appear for layout, public_api, private_api (3 times) but not build
+    const noteCount = (markdown.match(/Intermediate code at this altitude may not compile/g) ?? []).length;
+    expect(noteCount).toBe(3);
+
+    // Build section should follow without the note
+    const buildIdx = markdown.indexOf('#### Build');
+    const noteAfterBuild = markdown.indexOf('Intermediate code at this altitude may not compile', buildIdx);
+    expect(noteAfterBuild).toBe(-1);
+  });
+
+  it('renders filtered notes under Notes filtered by altitude, not as open obligations', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      makeAltitudeExchange('layout', 1, true, {
+        findings: [
+          {
+            id: 'LAYOUT-1',
+            severity: 'blocker',
+            category: 'maintainability',
+            finding: 'New file duplicates the existing review coordinator boundary.',
+            layered: {
+              disposition: 'filtered_note',
+              filter_reason: 'invalid_layered_metadata',
+              original_severity: 'blocker',
+              original_category: 'maintainability',
+            },
+          },
+        ],
+        responses: [],
+      }),
+      makeAltitudeExchange('build', 1, true),
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+
+    // The filtered finding should appear under Notes filtered by altitude
+    expect(markdown).toContain('#### Notes filtered by altitude');
+    expect(markdown).toContain('LAYOUT-1');
+    expect(markdown).toContain('invalid_layered_metadata');
+    expect(markdown).toContain('New file duplicates the existing review coordinator boundary.');
+
+    // It must NOT appear as an open obligation (checkbox)
+    expect(markdown).not.toContain('- [ ] [LAYOUT-1]');
+    expect(markdown).not.toContain('- [x] [LAYOUT-1]');
+  });
+
+  it('falls back to legacy rendering when only initial/final exchanges exist', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      {
+        id: 'initial-1',
+        gate: 'initial',
+        round: 1,
+        created_at: '2026-06-07T00:00:00Z',
+        proposer_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+        critic_profile: { profile: 'critic-agent', provider: 'openai_agent_sdk' },
+        review_status: 'converged',
+        review_summary: 'All good.',
+        findings: [],
+        responses: [],
+        converged: true,
+        requires_human_retest: false,
+      },
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+
+    // Must NOT use layered rendering
+    expect(markdown).not.toContain('### Layered implementation review');
+    // Must still render AI review content
+    expect(markdown).toContain('## AI review');
+    expect(markdown).toContain('### Initial review');
+  });
+
+  it('shows per-altitude convergence status in Layered implementation review header', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Human review\n\n');
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const gate_exchanges: GateReviewExchange[] = [
+      makeAltitudeExchange('layout', 1, false, {
+        review_status: 'non_converged',
+        converged: false,
+        non_convergence_reason: 'max_rounds',
+        findings: [{ id: 'LAYOUT-1', severity: 'blocker', category: 'maintainability', finding: 'Missing skeleton.' }],
+        responses: [],
+      }),
+      makeAltitudeExchange('build', 1, true),
+      makeAltitudeExchange('build', 2, true),
+    ];
+
+    await page.update('page-id', { gate_exchanges });
+
+    const markdown = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+
+    expect(markdown).toContain('#### Layout — non-converged');
+    expect(markdown).toContain('Non-convergence reason: `max_rounds`');
+    expect(markdown).toContain('- [ ] [LAYOUT-1] Missing skeleton.');
+    expect(markdown).toContain('#### Build — converged in 2 rounds');
+  });
+});

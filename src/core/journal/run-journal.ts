@@ -53,6 +53,13 @@ export interface CaptureFeedbackParams {
   disposition?: JournalFeedbackDisposition;
   thread?: Array<{ author_principal: string | null; ts: string | null; text: string }>;
   received_at?: string;
+  // Additive fields for layered filtered findings — optional for backward compatibility
+  note_kind?: 'filtered_layered_finding';
+  filter_reason?: string;
+  scope?: string;
+  reason_code?: string;
+  original_severity?: string;
+  original_category?: string;
 }
 
 export class RunJournal {
@@ -163,7 +170,7 @@ export class RunJournal {
   }
 
   async captureFeedback(params: CaptureFeedbackParams): Promise<void> {
-    const { id, run, target, gate, author_principal, text, severity, category, disposition = 'open', thread = [], received_at } = params;
+    const { id, run, target, gate, author_principal, text, severity, category, disposition = 'open', thread = [], received_at, note_kind, filter_reason, scope, reason_code, original_severity, original_category } = params;
     const identity = identityForRun(run);
 
     const record: Omit<JournalFeedbackRecord, 'seq' | 'writer_id'> = {
@@ -186,6 +193,12 @@ export class RunJournal {
         ts: item.ts,
         text: redactSecrets(item.text),
       })),
+      ...(note_kind !== undefined ? { note_kind } : {}),
+      ...(filter_reason !== undefined ? { filter_reason } : {}),
+      ...(scope !== undefined ? { scope } : {}),
+      ...(reason_code !== undefined ? { reason_code } : {}),
+      ...(original_severity !== undefined ? { original_severity } : {}),
+      ...(original_category !== undefined ? { original_category } : {}),
     };
 
     try {
