@@ -373,6 +373,8 @@ export class ImplementationReviewCoordinator {
     );
 
     let currentResult: ImplementationResult = implementation_result;
+    const previousSignatures: Set<string>[] = [];
+    const previousBlockingCounts: number[] = [];
 
     for (let round = 1; round <= maxRounds; round++) {
       const roundStart = performance.now();
@@ -499,6 +501,35 @@ export class ImplementationReviewCoordinator {
         return currentResult;
       }
 
+      // Oscillation check (only after at least one proposer response)
+      if (previousSignatures.length > 0 && this.isOscillating(previousSignatures, previousBlockingCounts, reviewResult.findings)) {
+        this.appendGateExchange(run, {
+          id: randomUUID(),
+          gate: phase,
+          round,
+          created_at: new Date().toISOString(),
+          proposer_profile: proposerSummary,
+          critic_profile: criticSummary,
+          review_status: 'non_converged',
+          review_summary: reviewResult.summary,
+          findings: reviewResult.findings,
+          responses: [],
+          converged: false,
+          non_convergence_reason: 'oscillation',
+          requires_human_retest: reviewResult.requires_human_retest ?? false,
+        }, captureFeedback);
+
+        this.deps.logger.warn(
+          { event: 'implementation.review.oscillation_detected', run_id: run.id, gate: phase, round, signature_count: this.signatureSet(reviewResult.findings).size },
+          'Implementation review did not converge: oscillation detected',
+        );
+
+        const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
+        await this.sendProgress(onProgress, run, phase, round, `${phaseLabel} did not converge: oscillation detected after ${round} round${round === 1 ? '' : 's'}`);
+
+        return { status: 'failed', error: `Implementation review ${phase} did not converge because oscillation was detected` };
+      }
+
       // Max rounds check
       if (round === maxRounds) {
         this.appendGateExchange(run, {
@@ -589,6 +620,10 @@ export class ImplementationReviewCoordinator {
       }, captureFeedback);
 
       currentResult = proposerResult;
+
+      // Track signatures after proposer response for oscillation detection in next round
+      previousSignatures.push(this.signatureSet(blockingFindings));
+      previousBlockingCounts.push(blockingFindings.length);
 
       const phaseLabel = phase === 'initial' ? 'Initial review' : 'Final review';
       await this.sendProgress(
@@ -717,6 +752,48 @@ export class ImplementationReviewCoordinator {
 
   private blockingFindings(findings: ImplementationReviewFinding[]): ImplementationReviewFinding[] {
     return findings.filter(f => f.severity === 'blocker' || f.severity === 'warning');
+  }
+
+  private findingSignature(finding: ImplementationReviewFinding): string {
+    const normalized = finding.finding
+      .toLowerCase()
+      .replace(/\b(?:[a-f0-9]{7,40}|[A-Z]+-\d+)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return `${finding.severity}|${finding.category}|${normalized}`;
+  }
+
+  private signatureSet(findings: ImplementationReviewFinding[]): Set<string> {
+    const blocking = this.blockingFindings(findings);
+    return new Set(blocking.map(f => this.findingSignature(f)));
+  }
+
+  private isOscillating(
+    previousSignatures: Set<string>[],
+    previousCounts: number[],
+    currentFindings: ImplementationReviewFinding[],
+  ): boolean {
+    const currentBlocking = this.blockingFindings(currentFindings);
+    const currentCount = currentBlocking.length;
+    const currentSigs = this.signatureSet(currentFindings);
+
+    // Check if same signature set appeared before with no shrink
+    for (const prev of previousSignatures) {
+      if (prev.size === currentSigs.size && [...prev].every(sig => currentSigs.has(sig))) {
+        return true; // repeated non-shrinking signature set
+      }
+    }
+
+    // Check two consecutive count increases
+    if (previousCounts.length >= 2) {
+      const last = previousCounts[previousCounts.length - 1]!;
+      const secondLast = previousCounts[previousCounts.length - 2]!;
+      if (currentCount > last && last > secondLast) {
+        return true; // two consecutive increases
+      }
+    }
+
+    return false;
   }
 
   private appendGateExchange(

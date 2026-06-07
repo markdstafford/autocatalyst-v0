@@ -631,6 +631,60 @@ describe('ImplementationReviewCoordinator', () => {
     });
   });
 
+  describe('convergence oscillation', () => {
+    function makeOscillationDeps(reviewResults: ImplementationReviewResult[]) {
+      let callCount = 0;
+      const readFile = vi.fn().mockImplementation(async () => {
+        const result = reviewResults[callCount] ?? { status: 'no_findings', summary: 'ok', findings: [] };
+        callCount++;
+        return JSON.stringify(result);
+      });
+      // Need enough rounds (3) for oscillation
+      const proposerResult = makeCompleteResult({ review_responses: [{ id: 'INIT-1', disposition: 'declined', response: 'Not applicable.' }] });
+      const deps = makeDeps({ status: 'no_findings', summary: 'ok', findings: [] }, {
+        readFile,
+        implementer: makeImplementer(proposerResult),
+      });
+      deps.policy = { ...deps.policy, max_initial_rounds: 3, max_final_rounds: 3, convergence: { enabled: true, allow_same_model: true } };
+      return deps;
+    }
+
+    it('detects repeated non-shrinking blocker signature and fails with oscillation', async () => {
+      const sameFinding = { id: 'INIT-1', severity: 'blocker' as const, category: 'correctness' as const, finding: 'Bug remains unchanged.' };
+      const deps = makeOscillationDeps([
+        { status: 'findings', summary: 'Round 1.', findings: [sameFinding] },
+        { status: 'findings', summary: 'Round 2 same.', findings: [sameFinding] },
+        { status: 'no_findings', summary: 'Round 3.', findings: [] }, // should never reach
+      ]);
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('oscillation');
+      expect(run.gate_exchanges!.at(-1)).toMatchObject({ review_status: 'non_converged', non_convergence_reason: 'oscillation' });
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'implementation.review.oscillation_detected' }),
+        expect.any(String),
+      );
+    });
+
+    it('does not trigger oscillation for info-only repeated findings', async () => {
+      // Info-only repeated findings should converge (info doesn't count for oscillation)
+      const deps = makeOscillationDeps([
+        { status: 'findings', summary: 'Round 1 info only.', findings: [{ id: 'INIT-INFO-1', severity: 'info' as const, category: 'docs' as const, finding: 'Note about docs.' }] },
+      ]);
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges![0]).toMatchObject({ converged: true });
+    });
+  });
+
   describe('convergence same-model enforcement', () => {
     function makeSameModelDeps(allow_same_model: boolean) {
       // Create a routing policy where both implementation.run and implementation.review.initial
