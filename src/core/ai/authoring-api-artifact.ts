@@ -198,14 +198,19 @@ export function insertConvergedApiSection(specMarkdown: string, apiMarkdown: str
 
   const sourceLines = working.split('\n');
 
-  // Find the first line matching ## Task list (literal scan, not fence-aware)
-  // so that the rendered section is inserted before the first occurrence of the heading
+  // Find the first top-level ## Task list heading outside fenced code blocks
   let insertionLineIndex = -1;
+  let inFence = false;
   for (let i = 0; i < sourceLines.length; i++) {
     const line = sourceLines[i] ?? '';
-    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
-    if (match && match[1]!.length === 2) {
-      const normalizedText = match[2]!.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const match = /^##\s+(.+)\s*$/.exec(line);
+    if (match) {
+      const normalizedText = match[1]!.trim().replace(/\s+/g, ' ').toLowerCase();
       if (normalizedText === 'task list') {
         insertionLineIndex = i;
         break;

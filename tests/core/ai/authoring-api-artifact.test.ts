@@ -37,9 +37,17 @@ describe('authoring API artifact helpers', () => {
   });
 
   it('inserts before top-level Task list and ignores headings inside fences', () => {
+    // Source has ## Task list inside a fence AND a real ## Task list outside it.
+    // The insertion must go before the real (outside-fence) ## Task list, not the fenced one.
     const source = '# Spec\n\n## Tech spec\n\n```md\n## Task list\n```\n\n## Task list\n';
     const result = insertConvergedApiSection(source, renderConvergedApiMarkdown(artifact));
-    expect(result.indexOf('## Converged API')).toBeLessThan(result.indexOf('## Task list', result.indexOf('```') + 3));
+    // The original fenced block must be preserved intact
+    expect(result).toContain('```md\n## Task list\n```');
+    // ## Converged API must be inserted before the last (real) ## Task list
+    const convergedApiPos = result.indexOf('## Converged API');
+    const lastTaskListPos = result.lastIndexOf('## Task list');
+    expect(convergedApiPos).toBeGreaterThan(0);
+    expect(convergedApiPos).toBeLessThan(lastTaskListPos);
   });
 
   it('removes an existing top-level generated section before replacement', () => {
