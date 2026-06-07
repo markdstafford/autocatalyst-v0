@@ -35,6 +35,10 @@ export interface ImplementationReviewPolicy {
   max_final_rounds: number;
   on_review_failure: 'warn' | 'block';
   retest_on_behavior_change: boolean;
+  convergence: {
+    enabled: boolean;
+    allow_same_model: boolean;
+  };
 }
 
 export interface ImplementationReviewCoordinatorDeps {
@@ -74,6 +78,17 @@ export class ImplementationReviewCoordinator {
   }
 
   private async runReview(
+    phase: 'initial' | 'final',
+    routeTask: 'implementation.review.initial' | 'implementation.review.final',
+    params: ReviewRunParams,
+  ): Promise<ImplementationResult> {
+    if (!this.deps.policy.convergence.enabled) {
+      return this.runSinglePassReview(phase, routeTask, params);
+    }
+    return this.runConvergenceReview(phase, routeTask, params);
+  }
+
+  private async runSinglePassReview(
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
     { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback }: ReviewRunParams,
@@ -302,6 +317,15 @@ export class ImplementationReviewCoordinator {
     }, captureFeedback);
 
     return implementerResult;
+  }
+
+  private async runConvergenceReview(
+    phase: 'initial' | 'final',
+    routeTask: 'implementation.review.initial' | 'implementation.review.final',
+    params: ReviewRunParams,
+  ): Promise<ImplementationResult> {
+    this.deps.logger.warn({ event: 'implementation.review.convergence_unimplemented', phase, run_id: params.run.id }, 'Convergence path is not implemented yet');
+    return { status: 'failed', error: `Implementation review ${phase} convergence path is not implemented` };
   }
 
   private emitSessionRecord(

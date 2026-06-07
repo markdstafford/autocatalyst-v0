@@ -64,7 +64,7 @@ function makeDeps(reviewResult: ImplementationReviewResult = { status: 'no_findi
     runner: makeRunner(),
     implementer: makeImplementer(),
     routingPolicy: makeRoutingPolicy(),
-    policy: { max_initial_rounds: 1, max_final_rounds: 1, on_review_failure: 'warn' as const, retest_on_behavior_change: true },
+    policy: { max_initial_rounds: 1, max_final_rounds: 1, on_review_failure: 'warn' as const, retest_on_behavior_change: true, convergence: { enabled: false, allow_same_model: false } },
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
     logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     readFile: vi.fn().mockResolvedValue(reviewJson),
@@ -453,6 +453,36 @@ describe('ImplementationReviewCoordinator', () => {
       expect(completed!['blocker_count']).toBe(1);
       expect(completed!['warning_count']).toBe(2);
       expect(completed!['info_count']).toBe(1);
+    });
+  });
+
+  describe('convergence disabled', () => {
+    it('keeps legacy one-pass-plus-response behavior without gate_exchanges', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      const implResult = makeCompleteResult({
+        summary: 'Updated once.',
+        review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }],
+      });
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(implResult) });
+      // Ensure convergence is disabled (it is by default in makeDeps)
+      deps.policy = { ...deps.policy, convergence: { enabled: false, allow_same_model: false } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.summary).toBe('Updated once.');
+      // One critic (runner.run) call, one implementer call
+      expect(deps.runner.run).toHaveBeenCalledTimes(1);
+      expect(deps.implementer.implement).toHaveBeenCalledTimes(1);
+      // review_exchanges has exactly one entry
+      expect(run.review_exchanges).toHaveLength(1);
+      // gate_exchanges is not set
+      expect((run as Record<string, unknown>)['gate_exchanges']).toBeUndefined();
     });
   });
 
