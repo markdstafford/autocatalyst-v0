@@ -630,4 +630,49 @@ describe('ImplementationReviewCoordinator', () => {
       expect(callbacks[0].is_heartbeat).toBeFalsy();
     });
   });
+
+  describe('convergence same-model enforcement', () => {
+    function makeSameModelDeps(allow_same_model: boolean) {
+      // Create a routing policy where both implementation.run and implementation.review.initial
+      // resolve to the same profile id
+      const sameProfile: AgentProfile = { id: 'same-agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' };
+      const routingPolicy: AgentRoutingPolicy = {
+        resolve: vi.fn().mockReturnValue(sameProfile),
+        resolveOptional: vi.fn().mockReturnValue(sameProfile),
+      };
+      const deps = makeDeps({ status: 'no_findings', summary: 'ok', findings: [] }, { routingPolicy });
+      deps.policy = { ...deps.policy, convergence: { enabled: true, allow_same_model } };
+      return { deps, sameProfile };
+    }
+
+    it('fails before critic execution when same profile and allow_same_model is false', async () => {
+      const { deps } = makeSameModelDeps(false);
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toContain('requires distinct proposer and critic profiles for initial review');
+      expect(deps.runner.run).not.toHaveBeenCalled();
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'implementation.review.same_model_rejected', profile_id: 'same-agent' }),
+        expect.any(String),
+      );
+    });
+
+    it('allows same profile when allow_same_model is true and logs a warning', async () => {
+      const { deps } = makeSameModelDeps(true);
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      expect(result.status).toBe('complete');
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'implementation.review.same_model_allowed', profile_id: 'same-agent' }),
+        expect.any(String),
+      );
+    });
+  });
 });

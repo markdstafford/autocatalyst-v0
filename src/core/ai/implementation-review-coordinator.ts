@@ -356,6 +356,10 @@ export class ImplementationReviewCoordinator {
     const criticSummary = agentProfileSummary(criticProfile);
     const proposerSummary = proposerProfile ? agentProfileSummary(proposerProfile) : { profile: 'implementation.run', provider: 'unknown' };
 
+    // Same-model enforcement
+    const sameModelResult = this.assertDistinctProfiles(phase, proposerProfile, criticProfile);
+    if (sameModelResult) return sameModelResult;
+
     const maxRounds = phase === 'initial' ? this.deps.policy.max_initial_rounds : this.deps.policy.max_final_rounds;
     const reviewResultPath = join(working_directory, '.autocatalyst', 'impl-review-result.json');
 
@@ -598,6 +602,41 @@ export class ImplementationReviewCoordinator {
 
     // Should not reach here
     return { status: 'failed', error: `Implementation review ${phase} did not converge` };
+  }
+
+  private assertDistinctProfiles(
+    phase: 'initial' | 'final',
+    proposerProfile: AgentProfile | null,
+    criticProfile: AgentProfile,
+  ): ImplementationResult | null {
+    if (!proposerProfile) return null; // no proposer configured, cannot compare
+
+    if (proposerProfile.id === criticProfile.id) {
+      if (!this.deps.policy.convergence.allow_same_model) {
+        this.deps.logger.warn(
+          { event: 'implementation.review.same_model_rejected', gate: phase, profile_id: proposerProfile.id },
+          'Same-profile proposer and critic rejected',
+        );
+        return {
+          status: 'failed',
+          error: `Implementation review convergence requires distinct proposer and critic profiles for ${phase} review. Both resolved to ${proposerProfile.id}. Configure implementation.run:proposer and implementation.review.${phase}:critic differently, or set implementation_review.convergence.allow_same_model: true.`,
+        };
+      }
+      // allow_same_model: true — warn but continue
+      this.deps.logger.warn(
+        { event: 'implementation.review.same_model_allowed', gate: phase, profile_id: proposerProfile.id },
+        'Same-profile proposer and critic allowed by configuration',
+      );
+    } else {
+      // Different IDs — check for same provider/model alias and warn
+      if (proposerProfile.provider === criticProfile.provider && proposerProfile.model === criticProfile.model) {
+        this.deps.logger.warn(
+          { event: 'implementation.review.same_model_alias_warning', gate: phase, proposer_id: proposerProfile.id, critic_id: criticProfile.id },
+          'Proposer and critic have different profile IDs but same provider/model',
+        );
+      }
+    }
+    return null;
   }
 
   private emitSessionRecord(
