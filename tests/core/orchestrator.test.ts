@@ -32,7 +32,7 @@ import type { ChannelRepoMap, RepoEntry } from '../../src/types/config.js';
 import type { ChannelRef, ConversationRef, MessageRef } from '../../src/types/channel.js';
 import { HandlerRegistryImpl } from '../../src/core/handler-registry.js';
 import { RunJournal } from '../../src/core/journal/run-journal.js';
-import type { JournalWriter, JournalStream } from '../../src/types/journal.js';
+import type { JournalWriter, JournalStream, NormalizedTokenUsage } from '../../src/types/journal.js';
 
 const nullDest = { write: () => {} };
 
@@ -1111,7 +1111,7 @@ describe('Orchestrator — intent classification routing', () => {
     adapter._emit({ type: 'thread_message', payload: makeFeedback({ content: 'thanks' }) });
     await new Promise(r => setTimeout(r, 50));
 
-    expect(classifier.classify).toHaveBeenCalledWith('thanks', 'awaiting_planning_input');
+    expect(classifier.classify).toHaveBeenCalledWith('thanks', 'awaiting_planning_input', expect.any(Function));
     expect(run.stage).toBe('awaiting_planning_input');
 
     const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify({
@@ -1140,6 +1140,7 @@ describe('Orchestrator — intent classification routing', () => {
     expect(ic.classify).toHaveBeenCalledWith(
       'wizard should not require all settings',
       'reviewing_spec',
+      expect.any(Function),
     );
   });
 
@@ -6634,5 +6635,74 @@ describe('Orchestrator — journal author attribution', () => {
     expect(feedbackRec, 'expected a feedback record').toBeDefined();
     expect(feedbackRec!.record.author_principal).toBe('slack:U0FEEDBACK1');
     expect(feedbackRec!.record.author_principal).not.toContain('1780808737.823699');
+  });
+});
+
+describe('Orchestrator — direct-call token threading', () => {
+  const SAMPLE_USAGE: NormalizedTokenUsage = { input: 120, output: 8, cache_read: 0, cache_write: 0 };
+
+  /** Classifier that emits a usage signal via the onResult callback, like the real ModelIntentClassifier. */
+  function makeUsageEmittingClassifier(intent: string, usage: NormalizedTokenUsage | null): IntentClassifier {
+    return {
+      classify: vi.fn().mockImplementation(async (_msg, _ctx, onResult) => {
+        onResult?.({ usage, profile: { id: 'p', provider: 'anthropic_direct', model: 'claude-haiku' } });
+        return intent;
+      }),
+    };
+  }
+
+  it('threads emitted usage into the intent.classify session record', async () => {
+    const adapter = makeMockAdapter();
+    const { journal, calls } = makeCapturingJournal();
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+        artifactPublisher: makeArtifactPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        channelRepoMap: makeChannelRepoMap(),
+        intentClassifier: makeUsageEmittingClassifier('idea', SAMPLE_USAGE),
+        journal,
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest({ author: 'U1' }) });
+    await new Promise(r => setTimeout(r, 80));
+    await orch.stop();
+
+    const classifySession = calls.find(c => c.stream === 'sessions' && c.record.step === 'intent.classify');
+    expect(classifySession, 'expected an intent.classify session record').toBeDefined();
+    expect(classifySession!.record.tokens).toEqual(SAMPLE_USAGE);
+    expect((classifySession!.record.model as { provider: string }).provider).toBe('anthropic_direct');
+  });
+
+  it('journals intent.classify tokens as null when the classifier emits no usage', async () => {
+    const adapter = makeMockAdapter();
+    const { journal, calls } = makeCapturingJournal();
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+        artifactPublisher: makeArtifactPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        channelRepoMap: makeChannelRepoMap(),
+        intentClassifier: makeUsageEmittingClassifier('idea', null),
+        journal,
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest({ author: 'U777' }) });
+    await new Promise(r => setTimeout(r, 80));
+    await orch.stop();
+
+    const classifySession = calls.find(c => c.stream === 'sessions' && c.record.step === 'intent.classify');
+    expect(classifySession, 'expected an intent.classify session record').toBeDefined();
+    expect(classifySession!.record.tokens).toBeNull();
   });
 });

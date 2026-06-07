@@ -267,13 +267,56 @@ describe('ImplementationApprovalHandler', () => {
       intent: 'bug',
       spec_path: '/ws/request-001/context-human/specs/feature-test.md',
       impl_summary: 'Implemented it.',
-    });
+    }, expect.any(Function));
     expect(deps.prManager.createPR).toHaveBeenCalledWith(
       '/ws/request-001',
       'spec/request-001',
       expect.any(String),
       expect.objectContaining({ title: 'short descriptive title' }),
     );
+  });
+
+  it('journals pr.title_generate session with the usage emitted by the generator', async () => {
+    const usage = { input: 950, output: 9, cache_read: 0, cache_write: 0 };
+    const sessions: Array<Record<string, unknown>> = [];
+    const journal = {
+      captureSession: vi.fn().mockImplementation(async (rec: Record<string, unknown>) => { sessions.push(rec); }),
+      captureFeedback: vi.fn().mockResolvedValue(undefined),
+    };
+    const { handler } = makeHandler({
+      journal,
+      prTitleGenerator: {
+        generate: vi.fn().mockImplementation(async (_input, onResult) => {
+          onResult?.({ usage, profile: { id: 'pr', provider: 'anthropic_direct', model: 'claude-haiku' } });
+          return 'generated title';
+        }),
+      },
+    });
+
+    await handler.handle(makeRun(), makeFeedback());
+
+    const prTitleSession = sessions.find((s) => s.step === 'pr.title_generate');
+    expect(prTitleSession, 'expected a pr.title_generate session record').toBeDefined();
+    expect(prTitleSession!.tokens).toEqual(usage);
+    expect((prTitleSession!.model as { provider: string }).provider).toBe('anthropic_direct');
+  });
+
+  it('journals pr.title_generate session tokens as null when the generator emits no usage', async () => {
+    const sessions: Array<Record<string, unknown>> = [];
+    const journal = {
+      captureSession: vi.fn().mockImplementation(async (rec: Record<string, unknown>) => { sessions.push(rec); }),
+      captureFeedback: vi.fn().mockResolvedValue(undefined),
+    };
+    const { handler } = makeHandler({
+      journal,
+      prTitleGenerator: { generate: vi.fn().mockResolvedValue('generated title') },
+    });
+
+    await handler.handle(makeRun(), makeFeedback());
+
+    const prTitleSession = sessions.find((s) => s.step === 'pr.title_generate');
+    expect(prTitleSession, 'expected a pr.title_generate session record').toBeDefined();
+    expect(prTitleSession!.tokens).toBeNull();
   });
 
   it('omits title when the generator returns null', async () => {

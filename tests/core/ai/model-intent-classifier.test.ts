@@ -38,6 +38,51 @@ describe('ModelIntentClassifier', () => {
     expect(requests[0].messages[0].content).not.toContain('Slack message');
   });
 
+  test('emits the direct-call token usage and resolved profile via onResult', async () => {
+    const usage = { input: 200, output: 5, cache_read: 0, cache_write: 0 };
+    const resolvedProfile = { id: 'intent', provider: 'anthropic_direct', model: 'claude-haiku-4-5' };
+    const runner: DirectModelRunner = {
+      async run() {
+        return { text: 'question', usage };
+      },
+    };
+    const registry = new IntentRegistryImpl();
+    registry.register({ name: 'question', description: 'A question', valid_contexts: ['new_thread'] });
+    registry.register({ name: 'idea', description: 'An idea', valid_contexts: ['new_thread'], fallback_contexts: ['new_thread'] });
+
+    const routingPolicy = {
+      resolve: () => resolvedProfile as never,
+      resolveOptional: () => resolvedProfile as never,
+    };
+    const classifier = new ModelIntentClassifier(runner, { intentRegistry: registry, routingPolicy });
+
+    const seen: Array<{ usage?: unknown; profile?: unknown }> = [];
+    const intent = await classifier.classify('How many open issues?', 'new_thread', (r) => { seen.push(r); });
+
+    expect(intent).toBe('question');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].usage).toEqual(usage);
+    expect(seen[0].profile).toEqual(resolvedProfile);
+  });
+
+  test('emits null usage via onResult when the runner provides none', async () => {
+    const runner: DirectModelRunner = {
+      async run() {
+        return { text: 'idea' };
+      },
+    };
+    const registry = new IntentRegistryImpl();
+    registry.register({ name: 'idea', description: 'An idea', valid_contexts: ['new_thread'], fallback_contexts: ['new_thread'] });
+
+    const classifier = new ModelIntentClassifier(runner, { intentRegistry: registry });
+
+    const seen: Array<{ usage?: unknown }> = [];
+    await classifier.classify('Build a thing', 'new_thread', (r) => { seen.push(r); });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].usage).toBeNull();
+  });
+
   test('throws a classification unavailable error when direct model calls fail', async () => {
     const runner: DirectModelRunner = {
       async run() {

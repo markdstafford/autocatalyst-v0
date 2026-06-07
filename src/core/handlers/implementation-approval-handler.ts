@@ -11,7 +11,7 @@ import { markArtifactStatus, artifactPath, artifactPublisherId } from '../run-re
 import { getArtifactLifecyclePolicy } from '../../types/artifact.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
-import type { AgentSessionCaptureFn, GateReviewExchange, ImplementationResult, ImplementationReviewExchange } from '../../types/ai.js';
+import type { AgentSessionCaptureFn, GateReviewExchange, ImplementationResult, ImplementationReviewExchange, IntentClassifyResult } from '../../types/ai.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
 
@@ -215,17 +215,21 @@ export class ImplementationApprovalHandler {
     const prTitleTs = new Date().toISOString();
     let generatedTitle: string | null;
     let prTitleOutcome: 'ok' | 'failed' = 'ok';
+    const prTitleResult: IntentClassifyResult = {};
     try {
       generatedTitle = await this.deps.prTitleGenerator.generate({
         intent: run.intent,
         spec_path: localPath ?? '',
         impl_summary: run.last_impl_result?.summary,
-      });
+      }, (r) => { prTitleResult.usage = r.usage; prTitleResult.profile = r.profile; });
     } catch (err) {
       prTitleOutcome = 'failed';
       generatedTitle = null;
     }
     if (this.deps.journal) {
+      const prTitleProfile = prTitleResult.profile ?? null;
+      const prTitleProvider = prTitleProfile?.provider ?? 'anthropic_direct';
+      const prTitleRunner: 'anthropic_direct' | 'openai_direct' = prTitleProvider === 'openai_direct' ? 'openai_direct' : 'anthropic_direct';
       void this.deps.journal.captureSession({
         run,
         ts_start: prTitleTs,
@@ -233,14 +237,14 @@ export class ImplementationApprovalHandler {
         phase: run.stage,
         step: 'pr.title_generate',
         round: 1,
-        model: { provider: 'anthropic_direct', name: null },
-        inference: { effort: null, thinking: null },
-        tokens: null,
+        model: { provider: prTitleProvider, name: prTitleProfile?.model ?? null },
+        inference: { effort: prTitleProfile?.effort ?? null, thinking: prTitleProfile?.thinking ?? null },
+        tokens: prTitleResult.usage ?? null,
         assistant_turns: null,
         tool_calls: null,
         tool_results: null,
         outcome: prTitleOutcome,
-        runner: 'anthropic_direct',
+        runner: prTitleRunner,
       }).catch(() => {});
     }
 

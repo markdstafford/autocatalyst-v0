@@ -8,6 +8,7 @@ import type {
   DirectModelRunner,
   Intent,
   IntentClassifier,
+  IntentClassifyResultListener,
 } from '../../types/ai.js';
 
 export interface ModelIntentClassifierOptions {
@@ -40,7 +41,11 @@ export class ModelIntentClassifier implements IntentClassifier {
     this.intentRegistry = options.intentRegistry ?? createBuiltInIntentRegistry();
   }
 
-  async classify(message: string, context: ClassificationContext): Promise<Intent> {
+  async classify(
+    message: string,
+    context: ClassificationContext,
+    onResult?: IntentClassifyResultListener,
+  ): Promise<Intent> {
     const fallback = this.intentRegistry.fallbackForContext(context) ?? 'feedback';
     if (!message.trim()) return fallback;
 
@@ -48,6 +53,7 @@ export class ModelIntentClassifier implements IntentClassifier {
     const validIntents = this.intentRegistry.validIntentsForContext(context);
     const promptIntents = validIntents.length > 0 ? validIntents : knownIntents;
     const route = { task: 'intent.classify' as const, stage: context };
+    const profile = this.options.routingPolicy?.resolve(route) ?? null;
     const prompt = buildPrompt(message, context, promptIntents, this.intentRegistry);
 
     let attempt = 0;
@@ -57,12 +63,13 @@ export class ModelIntentClassifier implements IntentClassifier {
       try {
         const response = await this.runner.run({
           route,
-          profile: this.options.routingPolicy?.resolve(route),
+          profile: profile ?? undefined,
           model: this.options.model,
           max_tokens: this.options.max_tokens ?? 20,
           messages: [{ role: 'user', content: prompt }],
         });
         sawModelResponse = true;
+        onResult?.({ usage: response.usage ?? null, profile });
         const intent = parseIntentFromResponse(response.text, knownIntents);
         if (intent && promptIntents.includes(intent)) {
           this.logger.info(
