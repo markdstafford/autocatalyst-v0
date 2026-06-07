@@ -372,7 +372,119 @@ describe('RunJournal facade', () => {
     expect(calls[0].record).toMatchObject({ role: 'critic', round: 2, gate: 'initial' });
   });
 
-  it('captureSession writes correct stream and fields', async () => {
+  it('captureFeedback filtered_note layered finding gets disposition=addressed and note_kind metadata', async () => {
+    const { writer, calls } = makeMockWriter();
+    const journal = new RunJournal(writer);
+    const run = makeRun();
+
+    await journal.captureFeedback({
+      id: 'gate-exchange-id:finding-001',
+      run,
+      target: 'implementation',
+      gate: 'layout',
+      author_principal: 'review:anthropic:claude-opus-4-5',
+      text: 'This finding is out of scope for this altitude',
+      severity: 'warning',
+      category: 'correctness',
+      disposition: 'addressed',
+      note_kind: 'filtered_layered_finding',
+      filter_reason: 'lower_altitude_scope',
+      scope: 'build',
+      reason_code: 'build_signal_unavailable_until_build',
+      original_severity: 'warning',
+      original_category: 'correctness',
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].stream).toBe('feedback');
+    const rec = calls[0].record as Record<string, unknown>;
+    expect(rec.disposition).toBe('addressed');
+    expect(rec.note_kind).toBe('filtered_layered_finding');
+    expect(rec.filter_reason).toBe('lower_altitude_scope');
+    expect(rec.scope).toBe('build');
+    expect(rec.reason_code).toBe('build_signal_unavailable_until_build');
+    expect(rec.original_severity).toBe('warning');
+    expect(rec.original_category).toBe('correctness');
+    expect(rec.gate).toBe('layout');
+  });
+
+  it('captureFeedback filtered_note layered finding never has disposition=open', async () => {
+    const { writer, calls } = makeMockWriter();
+    const journal = new RunJournal(writer);
+    const run = makeRun();
+
+    await journal.captureFeedback({
+      id: 'gate-exchange-id:finding-002',
+      run,
+      target: 'implementation',
+      gate: 'public_api',
+      author_principal: 'review:anthropic:claude-opus-4-5',
+      text: 'Out-of-scope finding filtered by altitude policy',
+      severity: 'blocker',
+      category: 'architecture',
+      disposition: 'addressed',
+      note_kind: 'filtered_layered_finding',
+      filter_reason: 'category_not_allowed',
+      original_severity: 'blocker',
+      original_category: 'architecture',
+    });
+
+    const rec = calls[0].record as Record<string, unknown>;
+    expect(rec.disposition).not.toBe('open');
+    expect(rec.disposition).toBe('addressed');
+    expect(rec.note_kind).toBe('filtered_layered_finding');
+  });
+
+  it('captureFeedback blocking layered finding that was not addressed gets disposition=open', async () => {
+    const { writer, calls } = makeMockWriter();
+    const journal = new RunJournal(writer);
+    const run = makeRun();
+
+    await journal.captureFeedback({
+      id: 'gate-exchange-id:finding-003',
+      run,
+      target: 'implementation',
+      gate: 'layout',
+      author_principal: 'review:anthropic:claude-opus-4-5',
+      text: 'Blocking finding not yet addressed',
+      severity: 'blocker',
+      category: 'correctness',
+      disposition: 'open',
+    });
+
+    const rec = calls[0].record as Record<string, unknown>;
+    expect(rec.disposition).toBe('open');
+    expect(rec.note_kind).toBeUndefined();
+    expect(rec.filter_reason).toBeUndefined();
+  });
+
+  it('captureFeedback legacy finding without layered metadata still works correctly', async () => {
+    const { writer, calls } = makeMockWriter();
+    const journal = new RunJournal(writer);
+    const run = makeRun();
+
+    await journal.captureFeedback({
+      id: 'legacy-finding-001',
+      run,
+      target: 'implementation',
+      author_principal: 'review:anthropic:claude-sonnet-4-6',
+      text: 'Legacy review finding without layered metadata',
+      severity: 'warning',
+      category: 'style',
+    });
+
+    expect(calls).toHaveLength(1);
+    const rec = calls[0].record as Record<string, unknown>;
+    expect(rec.disposition).toBe('open'); // default
+    expect(rec.note_kind).toBeUndefined();
+    expect(rec.filter_reason).toBeUndefined();
+    expect(rec.scope).toBeUndefined();
+    expect(rec.reason_code).toBeUndefined();
+    expect(rec.original_severity).toBeUndefined();
+    expect(rec.original_category).toBeUndefined();
+  });
+
+  it('captureFeedback writes correct stream and fields', async () => {
     const { writer, calls } = makeMockWriter();
     const journal = new RunJournal(writer);
     const run = makeRun();

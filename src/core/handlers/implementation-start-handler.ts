@@ -105,14 +105,20 @@ export class ImplementationStartHandler {
               // GateReviewExchange — emit feedback per finding with gate-aware disposition
               const criticProfile = exchange.critic_profile;
               for (const finding of exchange.findings) {
+                const layered = finding.layered;
                 const response = exchange.responses.find(r => r.id === finding.id);
                 const isBlocking = finding.severity === 'blocker' || finding.severity === 'warning';
-                const disposition =
-                  response?.disposition === 'fixed' ? 'addressed' as const
-                  : response?.disposition === 'declined' ? 'wont_fix' as const
-                  : exchange.converged || finding.severity === 'info' ? 'addressed' as const
-                  : isBlocking ? 'open' as const
-                  : 'addressed' as const;
+                let disposition: 'open' | 'addressed' | 'wont_fix';
+                if (layered?.disposition === 'filtered_note' || layered?.disposition === 'info') {
+                  disposition = 'addressed';
+                } else {
+                  disposition =
+                    response?.disposition === 'fixed' ? 'addressed' as const
+                    : response?.disposition === 'declined' ? 'wont_fix' as const
+                    : exchange.converged || finding.severity === 'info' ? 'addressed' as const
+                    : isBlocking ? 'open' as const
+                    : 'addressed' as const;
+                }
                 void this.deps.journal!.captureFeedback({
                   id: `${exchange.id}:${finding.id}`,
                   run: captureRun,
@@ -123,6 +129,14 @@ export class ImplementationStartHandler {
                   severity: finding.severity,
                   category: finding.category,
                   disposition,
+                  ...(layered?.disposition === 'filtered_note' ? {
+                    note_kind: 'filtered_layered_finding' as const,
+                    filter_reason: layered.filter_reason,
+                    scope: layered.scope,
+                    reason_code: layered.reason_code,
+                    original_severity: layered.original_severity,
+                    original_category: layered.original_category,
+                  } : {}),
                 }).catch(() => {});
               }
             } else {

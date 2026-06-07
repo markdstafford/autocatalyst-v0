@@ -113,6 +113,13 @@ export interface JournalFeedbackRecord extends JournalBaseRecord {
   category: JournalFeedbackCategory;
   disposition: JournalFeedbackDisposition;
   thread: JournalFeedbackThreadItem[];
+  // Additive fields for layered filtered findings — optional for backward compatibility
+  note_kind?: 'filtered_layered_finding';
+  filter_reason?: string; // LayeredFindingFilterReason
+  scope?: string; // LayeredFindingScope
+  reason_code?: string; // LayeredFindingReasonCode
+  original_severity?: string; // ImplementationReviewFindingSeverity
+  original_category?: string; // ImplementationReviewFindingCategory
 }
 
 export interface JournalRunEventRecord extends JournalBaseRecord {
