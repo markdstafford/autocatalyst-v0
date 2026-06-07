@@ -32,6 +32,7 @@ import type { SpecReviewCoordinator } from './ai/spec-review-coordinator.js';
 import { clearAgentRequestContext, isAiActiveStage } from './run-ai-context.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
 import type { RunJournal } from './journal/run-journal.js';
+import type { AgentProfile } from '../types/ai.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
@@ -331,9 +332,12 @@ export class OrchestratorImpl implements Orchestrator {
       // Stage 1: classify raw message in new_thread context
       let stage1Intent: Intent = 'idea';
       if (this.deps.intentClassifier) {
+        const classifyTs = new Date().toISOString();
         try {
           stage1Intent = await this.deps.intentClassifier.classify(request.content, 'new_thread');
+          this.captureDirectSession(run, 'intent.classify', classifyTs, 'ok');
         } catch (err) {
+          this.captureDirectSession(run, 'intent.classify', classifyTs, 'failed');
           await this.handleClassificationUnavailable(run, request.conversation, err);
           return;
         }
@@ -405,9 +409,12 @@ export class OrchestratorImpl implements Orchestrator {
         const enrichedMessage = buildEnrichedClassificationMessage(request.content, issue);
         let intent: Intent = 'idea';
         if (this.deps.intentClassifier) {
+          const classifyTs2 = new Date().toISOString();
           try {
             intent = await this.deps.intentClassifier.classify(enrichedMessage, 'existing_issue');
+            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'ok');
           } catch (err) {
+            this.captureDirectSession(run, 'intent.classify', classifyTs2, 'failed');
             await this.handleClassificationUnavailable(run, request.conversation, err);
             return;
           }
@@ -537,9 +544,12 @@ export class OrchestratorImpl implements Orchestrator {
       let intent: Intent = 'feedback';
       if (this.deps.intentClassifier) {
         const context: ClassificationContext = routingStage as ClassificationContext;
+        const classifyTs3 = new Date().toISOString();
         try {
           intent = await this.deps.intentClassifier.classify(feedback.content, context);
+          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'ok');
         } catch (err) {
+          this.captureDirectSession(run, 'intent.classify', classifyTs3, 'failed');
           void this.deps.journal?.captureInboundMessage(
             run,
             { content: feedback.content },
@@ -784,6 +794,41 @@ export class OrchestratorImpl implements Orchestrator {
       'Run stage overridden via operator command',
     );
     return 'updated';
+  }
+
+  private captureDirectSession(
+    run: Run,
+    task: string,
+    ts_start: string,
+    outcome: 'ok' | 'failed',
+    profile?: AgentProfile | null,
+  ): void {
+    if (!this.deps.journal) return;
+    const ts_end = new Date().toISOString();
+    const providerName = profile?.provider ?? 'anthropic_direct';
+    const runnerName: 'anthropic_direct' | 'openai_direct' = providerName === 'openai_direct' ? 'openai_direct' : 'anthropic_direct';
+    void this.deps.journal.captureSession({
+      run,
+      ts_start,
+      ts_end,
+      phase: run.stage,
+      step: task,
+      round: 1,
+      model: {
+        provider: providerName,
+        name: profile?.model ?? null,
+      },
+      inference: {
+        effort: profile?.effort ?? null,
+        thinking: profile?.thinking ?? null,
+      },
+      tokens: null,
+      assistant_turns: null,
+      tool_calls: null,
+      tool_results: null,
+      outcome,
+      runner: runnerName,
+    }).catch(() => {});
   }
 
   private async reactToRunMessage(run: Run, reaction: string): Promise<void> {

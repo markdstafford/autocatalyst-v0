@@ -7,8 +7,10 @@ import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
 import type {
   AgentInvocationMetadata,
+  AgentProfile,
   AgentRunner,
   AgentRoutingPolicy,
+  AgentSessionCaptureFn,
   ImplementationAgent,
   ImplementationResult,
   ImplementationReviewExchange,
@@ -51,6 +53,7 @@ export interface ReviewRunParams {
   working_directory: string;
   onProgress?: (message: string) => Promise<void>;
   onAgentRequest?: (metadata: AgentInvocationMetadata) => void;
+  captureSession?: AgentSessionCaptureFn;
 }
 
 export class ImplementationReviewCoordinator {
@@ -71,7 +74,7 @@ export class ImplementationReviewCoordinator {
   private async runReview(
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
-    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest }: ReviewRunParams,
+    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest, captureSession }: ReviewRunParams,
   ): Promise<ImplementationResult> {
     // Resolve review profile — fall back to initial when final is absent
     let reviewProfile = this.deps.routingPolicy.resolveOptional({ task: routeTask });
@@ -126,6 +129,7 @@ export class ImplementationReviewCoordinator {
 
     let reviewResultContent: string;
     let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
+    const ts_start = new Date().toISOString();
     try {
       if (onAgentRequest && reviewProfile) {
         onAgentRequest({
@@ -168,9 +172,11 @@ export class ImplementationReviewCoordinator {
         { run_id: run.id, request_id: run.request_id },
       );
 
+      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'ok');
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
       reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
     } catch (err) {
+      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'failed');
       this.deps.logger.error(
         {
           event: 'implementation.review.round_failed',
@@ -293,6 +299,31 @@ export class ImplementationReviewCoordinator {
     });
 
     return implementerResult;
+  }
+
+  private emitSessionRecord(
+    captureSession: AgentSessionCaptureFn | undefined,
+    profile: AgentProfile,
+    routeTask: 'implementation.review.initial' | 'implementation.review.final',
+    ts_start: string,
+    outcome: 'ok' | 'failed',
+  ): void {
+    if (!captureSession) return;
+    const runner = profile.provider === 'openai_agent_sdk' ? 'openai_agent' : 'anthropic_agent';
+    captureSession({
+      phase: `implementation_review`,
+      step: routeTask,
+      ts_start,
+      ts_end: new Date().toISOString(),
+      model: { provider: profile.provider, name: profile.model ?? null },
+      inference: { effort: profile.effort ?? null, thinking: profile.thinking ?? null },
+      tokens: null,
+      assistant_turns: null,
+      tool_calls: null,
+      tool_results: null,
+      outcome,
+      runner,
+    });
   }
 
   private handleReviewFailure(

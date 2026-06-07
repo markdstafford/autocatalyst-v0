@@ -106,6 +106,9 @@ export class ArtifactFeedbackHandler {
     // Spec review (feature_spec only, after branch guard, before publish)
     let reviewedPageContent = page_content;
     if (refs.artifact.kind === 'feature_spec' && this.deps.specReviewCoordinator) {
+      const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       const reviewResult = await this.deps.specReviewCoordinator.runSpecReview({
         run,
         artifact_path: refs.local_path,
@@ -119,6 +122,7 @@ export class ArtifactFeedbackHandler {
           );
         }),
         onAgentRequest,
+        captureSession: captureSessionForReview,
       });
 
       if (reviewResult.status !== 'complete') {

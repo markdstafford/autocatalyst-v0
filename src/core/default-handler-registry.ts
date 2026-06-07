@@ -331,6 +331,7 @@ async function handleImplementationApproval(
     logger: deps.logger,
     branchGuard,
     reviewCoordinator: deps.reviewCoordinator,
+    journal: deps.journal,
   });
   await handler.handle(run, feedback);
 }

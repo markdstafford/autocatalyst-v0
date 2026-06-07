@@ -11,8 +11,9 @@ import { markArtifactStatus, artifactPath, artifactPublisherId } from '../run-re
 import { getArtifactLifecyclePolicy } from '../../types/artifact.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
-import type { ImplementationResult } from '../../types/ai.js';
+import type { AgentSessionCaptureFn, ImplementationResult } from '../../types/ai.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
+import type { RunJournal } from '../journal/run-journal.js';
 
 export interface ImplementationApprovalDeps {
   specCommitter?: Pick<SpecCommitter, 'updateStatus'>;
@@ -28,6 +29,7 @@ export interface ImplementationApprovalDeps {
   now?: () => Date;
   branchGuard?: BranchGuard;
   reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runFinalReview'>;
+  journal?: Pick<RunJournal, 'captureSession'>;
 }
 
 export type ImplementationApprovalResult =
@@ -85,6 +87,9 @@ export class ImplementationApprovalHandler {
     // Run final review before PR creation
     if (this.deps.reviewCoordinator) {
       const onAgentRequest = makeRunAgentRequestRecorder(run, this.deps.persist, this.deps.logger);
+      const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       const currentResult: ImplementationResult = {
         status: 'complete',
         summary: run.last_impl_result?.summary,
@@ -98,6 +103,7 @@ export class ImplementationApprovalHandler {
         implementation_result: currentResult,
         working_directory: run.workspace_path,
         onAgentRequest,
+        captureSession: captureSessionForReview,
       });
 
       if (reviewedResult.status === 'needs_input') {
@@ -160,11 +166,37 @@ export class ImplementationApprovalHandler {
 
     this.markArtifactComplete(run);
 
-    const generatedTitle = await this.deps.prTitleGenerator.generate({
-      intent: run.intent,
-      spec_path: localPath ?? '',
-      impl_summary: run.last_impl_result?.summary,
-    });
+    const prTitleTs = new Date().toISOString();
+    let generatedTitle: string | null;
+    let prTitleOutcome: 'ok' | 'failed' = 'ok';
+    try {
+      generatedTitle = await this.deps.prTitleGenerator.generate({
+        intent: run.intent,
+        spec_path: localPath ?? '',
+        impl_summary: run.last_impl_result?.summary,
+      });
+    } catch (err) {
+      prTitleOutcome = 'failed';
+      generatedTitle = null;
+    }
+    if (this.deps.journal) {
+      void this.deps.journal.captureSession({
+        run,
+        ts_start: prTitleTs,
+        ts_end: new Date().toISOString(),
+        phase: run.stage,
+        step: 'pr.title_generate',
+        round: 1,
+        model: { provider: 'anthropic_direct', name: null },
+        inference: { effort: null, thinking: null },
+        tokens: null,
+        assistant_turns: null,
+        tool_calls: null,
+        tool_results: null,
+        outcome: prTitleOutcome,
+        runner: 'anthropic_direct',
+      }).catch(() => {});
+    }
 
     const prOptions: PRManagerOptions = {
       impl_result: run.last_impl_result,

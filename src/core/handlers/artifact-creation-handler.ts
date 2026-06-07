@@ -100,6 +100,9 @@ export class ArtifactCreationHandler {
 
     // Spec review (idea intent only, after branch guard, before publish)
     if (intent === 'idea' && this.deps.specReviewCoordinator && run.artifact) {
+      const captureSessionForReview: AgentSessionCaptureFn | undefined = this.deps.journal
+        ? (data) => { void this.deps.journal!.captureSession({ ...data, run, round: 1 }).catch(() => {}); }
+        : undefined;
       const reviewResult = await this.deps.specReviewCoordinator.runSpecReview({
         run,
         artifact_path: local_path,
@@ -112,6 +115,7 @@ export class ArtifactCreationHandler {
           );
         }),
         onAgentRequest,
+        captureSession: captureSessionForReview,
       });
 
       if (reviewResult.status !== 'complete') {
