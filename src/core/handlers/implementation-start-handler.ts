@@ -10,6 +10,10 @@ import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
+import {
+  altitudesForDepth,
+  type ResolvedImplementationConvergencePolicy,
+} from '../ai/layered-convergence-policy.js';
 
 export interface ImplementationStartDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -20,7 +24,8 @@ export interface ImplementationStartDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
-  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
+  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview' | 'runLayeredImplementation'>;
+  convergencePolicy?: ResolvedImplementationConvergencePolicy;
   journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
 }
 
@@ -138,7 +143,7 @@ export class ImplementationStartHandler {
             }
           }
         : undefined;
-      reviewedResult = await this.deps.reviewCoordinator.runInitialReview({
+      const reviewParams = {
         run,
         artifact_path: refs.local_path,
         implementation_result: result,
@@ -147,7 +152,15 @@ export class ImplementationStartHandler {
         onAgentRequest,
         captureSession,
         captureFeedback,
-      });
+      };
+      const policy = this.deps.convergencePolicy;
+      const useLayered =
+        policy?.enabled &&
+        policy.depth !== 'build_only' &&
+        typeof this.deps.reviewCoordinator.runLayeredImplementation === 'function';
+      reviewedResult = useLayered
+        ? await this.deps.reviewCoordinator.runLayeredImplementation!(reviewParams, { altitudes: altitudesForDepth(policy!.depth) })
+        : await this.deps.reviewCoordinator.runInitialReview(reviewParams);
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');
         try {

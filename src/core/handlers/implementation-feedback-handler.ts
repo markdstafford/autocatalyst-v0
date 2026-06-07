@@ -9,6 +9,11 @@ import type { BranchGuard } from '../git-branch-guard.js';
 import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 import { makeRunAgentRequestRecorder } from '../run-ai-context.js';
 import type { RunJournal } from '../journal/run-journal.js';
+import {
+  altitudesForDepth,
+  resolveFeedbackDepth,
+  type ResolvedImplementationConvergencePolicy,
+} from '../ai/layered-convergence-policy.js';
 
 export interface ImplementationFeedbackDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -19,7 +24,8 @@ export interface ImplementationFeedbackDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error' | 'debug'>;
   branchGuard?: BranchGuard;
-  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
+  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview' | 'runLayeredImplementation'>;
+  convergencePolicy?: ResolvedImplementationConvergencePolicy;
   journal?: Pick<RunJournal, 'captureSession' | 'captureFeedback'>;
 }
 
@@ -132,7 +138,7 @@ export class ImplementationFeedbackHandler {
             }
           }
         : undefined;
-      reviewedResult = await this.deps.reviewCoordinator.runInitialReview({
+      const reviewParams = {
         run,
         artifact_path: localPath,
         implementation_result: result,
@@ -141,7 +147,19 @@ export class ImplementationFeedbackHandler {
         onAgentRequest,
         captureSession: captureSessionForReview,
         captureFeedback,
-      });
+      };
+      const policy = this.deps.convergencePolicy;
+      // Feedback uses feedback_depth (defaulting to build_only) to choose altitudes.
+      const feedbackDepth = policy
+        ? resolveFeedbackDepth(policy.feedback_depth, policy.depth)
+        : 'build_only';
+      const useLayered =
+        policy?.enabled &&
+        feedbackDepth !== 'build_only' &&
+        typeof this.deps.reviewCoordinator.runLayeredImplementation === 'function';
+      reviewedResult = useLayered
+        ? await this.deps.reviewCoordinator.runLayeredImplementation!(reviewParams, { altitudes: altitudesForDepth(feedbackDepth) })
+        : await this.deps.reviewCoordinator.runInitialReview(reviewParams);
       if (reviewedResult.status === 'needs_input') {
         this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');
         try {

@@ -30,6 +30,7 @@ import {
   drainAgentRunner,
 } from './agent-services.js';
 import { agentProfileSummary } from './routing-policy.js';
+import type { LayeredConvergenceGate } from './layered-convergence-policy.js';
 
 type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
@@ -325,8 +326,62 @@ export class ImplementationReviewCoordinator {
   private async runConvergenceReview(
     phase: 'initial' | 'final',
     routeTask: 'implementation.review.initial' | 'implementation.review.final',
-    { run, artifact_path, implementation_result, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback }: ReviewRunParams,
+    params: ReviewRunParams,
   ): Promise<ImplementationResult> {
+    return this.runConvergenceLoop(phase, phase, routeTask, params, params.implementation_result);
+  }
+
+  /**
+   * Run the layered implementation review across altitudes. This is the public
+   * entry point for the layered-diff convergence feature. Thin routing:
+   *  - If convergence is disabled, delegate to the existing single-pass path.
+   *  - If altitudes is exactly ['build'], delegate to the existing build
+   *    convergence path (preserving gate: "initial" in exchanges).
+   *  - For layered altitudes, run each altitude convergence in order and
+   *    return failure if any altitude does not converge.
+   */
+  async runLayeredImplementation(
+    params: ReviewRunParams,
+    opts: { altitudes: readonly LayeredConvergenceGate[] },
+  ): Promise<ImplementationResult> {
+    const altitudes = opts.altitudes;
+
+    // Convergence disabled → existing single-pass behavior.
+    if (!this.deps.policy.convergence.enabled) {
+      return this.runInitialReview(params);
+    }
+
+    // Build-only mode → existing convergence path (preserves gate: "initial").
+    if (altitudes.length === 1 && altitudes[0] === 'build') {
+      return this.runInitialReview(params);
+    }
+
+    // Layered altitudes: run each altitude convergence loop in order.
+    let currentResult = params.implementation_result;
+    for (const altitude of altitudes) {
+      const result = await this.runConvergenceLoop(
+        altitude,
+        'initial',
+        'implementation.review.initial',
+        { ...params, implementation_result: currentResult },
+        currentResult,
+      );
+      if (result.status !== 'complete') {
+        return result;
+      }
+      currentResult = result;
+    }
+    return currentResult;
+  }
+
+  private async runConvergenceLoop(
+    gate: 'initial' | 'final' | LayeredConvergenceGate,
+    phase: 'initial' | 'final',
+    routeTask: 'implementation.review.initial' | 'implementation.review.final',
+    { run, artifact_path, working_directory, onProgress, onAgentRequest, captureSession, captureFeedback }: ReviewRunParams,
+    initialResult: ImplementationResult,
+  ): Promise<ImplementationResult> {
+    const implementation_result = initialResult;
     // Resolve critic profile — fall back to initial when final is absent
     let criticProfile = this.deps.routingPolicy.resolveOptional({ task: routeTask, role: 'critic' });
     if (!criticProfile && phase === 'final') {
@@ -368,7 +423,7 @@ export class ImplementationReviewCoordinator {
     } catch { /* ignore */ }
 
     this.deps.logger.info(
-      { event: 'implementation.review.convergence_started', phase, gate: phase, run_id: run.id, max_rounds: maxRounds, critic_profile: criticSummary.profile },
+      { event: 'implementation.review.convergence_started', phase, gate, run_id: run.id, max_rounds: maxRounds, critic_profile: criticSummary.profile },
       'Starting convergence review',
     );
 
@@ -380,7 +435,7 @@ export class ImplementationReviewCoordinator {
       const roundStart = performance.now();
 
       this.deps.logger.info(
-        { event: 'implementation.review.round_started', phase, gate: phase, round, run_id: run.id, review_profile: criticProfile.id },
+        { event: 'implementation.review.round_started', phase, gate, round, run_id: run.id, review_profile: criticProfile.id },
         'Convergence review round started',
       );
 
@@ -389,7 +444,7 @@ export class ImplementationReviewCoordinator {
       const changedFiles = await this.getChangedFiles(working_directory);
 
       // Build critic prompt with convergence context
-      const convergenceContext = { gate: phase, round };
+      const convergenceContext = { gate, round };
       const prompt = phase === 'initial'
         ? buildInitialReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext)
         : buildFinalReviewPrompt(artifact_path, working_directory, currentResult, diffContext, changedFiles, convergenceContext);
@@ -443,11 +498,11 @@ export class ImplementationReviewCoordinator {
 
         const reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
         reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
-        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'ok', drainSummary, { role: 'critic', round, gate: phase });
+        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'ok', drainSummary, { role: 'critic', round, gate });
       } catch (err) {
-        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'failed', drainSummary, { role: 'critic', round, gate: phase });
+        this.emitSessionRecord(captureSession, criticProfile, routeTask, ts_start, 'failed', drainSummary, { role: 'critic', round, gate });
         this.deps.logger.error(
-          { event: 'implementation.review.round_failed', phase, gate: phase, round, run_id: run.id, error: String(err) },
+          { event: 'implementation.review.round_failed', phase, gate, round, run_id: run.id, error: String(err) },
           'Convergence review round failed',
         );
         return this.handleReviewFailure(phase, run, currentResult, proposerSummary, criticSummary, String(err), captureFeedback);
@@ -455,7 +510,7 @@ export class ImplementationReviewCoordinator {
 
       if (reviewResult.status === 'failed') {
         this.deps.logger.error(
-          { event: 'implementation.review.round_failed', phase, gate: phase, round, run_id: run.id, reason: 'review_agent_status_failed', error: reviewResult.error },
+          { event: 'implementation.review.round_failed', phase, gate, round, run_id: run.id, reason: 'review_agent_status_failed', error: reviewResult.error },
           'Convergence review round failed: review agent reported failure',
         );
         return this.handleReviewFailure(phase, run, currentResult, proposerSummary, criticSummary, reviewResult.error ?? 'Review model reported failure', captureFeedback);
@@ -467,7 +522,7 @@ export class ImplementationReviewCoordinator {
       const infoCount = reviewResult.findings.filter(f => f.severity === 'info').length;
 
       this.deps.logger.info(
-        { event: 'implementation.review.round_completed', phase, gate: phase, round, run_id: run.id, review_profile: criticProfile.id, duration_ms, blocker_count: blockerCount, warning_count: warningCount, info_count: infoCount },
+        { event: 'implementation.review.round_completed', phase, gate, round, run_id: run.id, review_profile: criticProfile.id, duration_ms, blocker_count: blockerCount, warning_count: warningCount, info_count: infoCount },
         'Convergence review round completed',
       );
 
@@ -477,7 +532,7 @@ export class ImplementationReviewCoordinator {
       if (reviewResult.status === 'no_findings' || blockingFindings.length === 0) {
         this.appendGateExchange(run, {
           id: randomUUID(),
-          gate: phase,
+          gate,
           round,
           created_at: new Date().toISOString(),
           proposer_profile: proposerSummary,
@@ -491,7 +546,7 @@ export class ImplementationReviewCoordinator {
         }, captureFeedback);
 
         this.deps.logger.info(
-          { event: 'implementation.review.converged', phase, gate: phase, round, run_id: run.id },
+          { event: 'implementation.review.converged', phase, gate, round, run_id: run.id },
           'Implementation review converged',
         );
 
@@ -505,7 +560,7 @@ export class ImplementationReviewCoordinator {
       if (previousSignatures.length > 0 && this.isOscillating(previousSignatures, previousBlockingCounts, reviewResult.findings)) {
         this.appendGateExchange(run, {
           id: randomUUID(),
-          gate: phase,
+          gate,
           round,
           created_at: new Date().toISOString(),
           proposer_profile: proposerSummary,
@@ -520,7 +575,7 @@ export class ImplementationReviewCoordinator {
         }, captureFeedback);
 
         this.deps.logger.warn(
-          { event: 'implementation.review.oscillation_detected', run_id: run.id, gate: phase, round, signature_count: this.signatureSet(reviewResult.findings).size },
+          { event: 'implementation.review.oscillation_detected', run_id: run.id, gate, round, signature_count: this.signatureSet(reviewResult.findings).size },
           'Implementation review did not converge: oscillation detected',
         );
 
@@ -534,7 +589,7 @@ export class ImplementationReviewCoordinator {
       if (round === maxRounds) {
         this.appendGateExchange(run, {
           id: randomUUID(),
-          gate: phase,
+          gate,
           round,
           created_at: new Date().toISOString(),
           proposer_profile: proposerSummary,
@@ -549,7 +604,7 @@ export class ImplementationReviewCoordinator {
         }, captureFeedback);
 
         this.deps.logger.warn(
-          { event: 'implementation.review.non_converged', phase, gate: phase, round, run_id: run.id, reason: 'max_rounds' },
+          { event: 'implementation.review.non_converged', phase, gate, round, run_id: run.id, reason: 'max_rounds' },
           'Implementation review did not converge: max_rounds reached',
         );
 
@@ -568,7 +623,7 @@ export class ImplementationReviewCoordinator {
         route: proposerRoute,
         role: 'proposer',
         round,
-        gate: phase,
+        gate,
         captureSession,
         onAgentRequest,
       };
@@ -606,7 +661,7 @@ export class ImplementationReviewCoordinator {
       // Append addressed gate exchange
       this.appendGateExchange(run, {
         id: randomUUID(),
-        gate: phase,
+        gate,
         round,
         created_at: new Date().toISOString(),
         proposer_profile: proposerSummary,

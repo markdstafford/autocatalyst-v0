@@ -548,6 +548,53 @@ describe('ImplementationStartHandler with reviewCoordinator', () => {
     );
   });
 
+  it('calls runLayeredImplementation when convergencePolicy enables a layered depth', async () => {
+    const coord = {
+      runInitialReview: vi.fn().mockResolvedValue({ status: 'complete', summary: 'unused', testing_instructions: 'unused' }),
+      runLayeredImplementation: vi.fn().mockResolvedValue({
+        status: 'complete',
+        summary: 'Layered done.',
+        testing_instructions: 'npm test',
+      }),
+    };
+    const { handler } = makeHandler({
+      reviewCoordinator: coord,
+      convergencePolicy: {
+        enabled: true,
+        allow_same_model: false,
+        depth: 'layout',
+        feedback_depth: 'build_only',
+        max_model_sessions_per_run: 24,
+      },
+    });
+    await handler.handle(makeRun(), makeFeedback());
+    expect(coord.runLayeredImplementation).toHaveBeenCalledWith(
+      expect.objectContaining({ artifact_path: '/ws/request-001/context-human/specs/feature-test.md' }),
+      { altitudes: ['layout', 'build'] },
+    );
+    expect(coord.runInitialReview).not.toHaveBeenCalled();
+  });
+
+  it('calls runInitialReview when convergencePolicy is build_only', async () => {
+    const coord = {
+      runInitialReview: vi.fn().mockResolvedValue({ status: 'complete', summary: 'unused', testing_instructions: 'unused' }),
+      runLayeredImplementation: vi.fn().mockResolvedValue({ status: 'complete', summary: 'unused', testing_instructions: 'unused' }),
+    };
+    const { handler } = makeHandler({
+      reviewCoordinator: coord,
+      convergencePolicy: {
+        enabled: true,
+        allow_same_model: false,
+        depth: 'build_only',
+        feedback_depth: 'build_only',
+        max_model_sessions_per_run: 24,
+      },
+    });
+    await handler.handle(makeRun(), makeFeedback());
+    expect(coord.runInitialReview).toHaveBeenCalled();
+    expect(coord.runLayeredImplementation).not.toHaveBeenCalled();
+  });
+
   it('passes gate_exchanges to implFeedbackPage.create when present', async () => {
     const gateExchange: GateReviewExchange = {
       id: 'gate-001',

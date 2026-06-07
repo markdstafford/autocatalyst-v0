@@ -775,4 +775,83 @@ describe('ImplementationReviewCoordinator', () => {
       );
     });
   });
+
+  describe('runLayeredImplementation', () => {
+    it('returns single-pass behavior when convergence is disabled', async () => {
+      const deps = makeDeps();
+      deps.policy = { ...deps.policy, convergence: { enabled: false, allow_same_model: false } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const original = makeCompleteResult();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: original, working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+      expect(result).toBe(original);
+      // Used legacy review_exchanges, not gate_exchanges
+      expect(run.review_exchanges).toHaveLength(1);
+      expect((run as Record<string, unknown>)['gate_exchanges']).toBeUndefined();
+    });
+
+    it('delegates to existing build convergence for build-only depth and preserves gate: "initial"', async () => {
+      let callCount = 0;
+      const readFile = vi.fn().mockImplementation(async () => {
+        const result = callCount === 0
+          ? { status: 'no_findings', summary: 'Round 1 clean.', findings: [] }
+          : { status: 'no_findings', summary: 'unused', findings: [] };
+        callCount++;
+        return JSON.stringify(result);
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(1);
+      expect(run.gate_exchanges![0].gate).toBe('initial'); // build-only preserves "initial"
+    });
+
+    it('for layered depth, runs altitudes in order and persists altitude gate names', async () => {
+      // Two altitudes, each converges on first round (no_findings)
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'no_findings', summary: 'Clean.', findings: [] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 2, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+      expect(result.status).toBe('complete');
+      expect(run.gate_exchanges).toHaveLength(2);
+      expect(run.gate_exchanges![0].gate).toBe('layout');
+      expect(run.gate_exchanges![1].gate).toBe('build');
+    });
+
+    it('fails immediately when an early altitude does not converge', async () => {
+      // layout: blocker on round 1 with max_initial_rounds=1 → fails
+      const readFile = vi.fn().mockImplementation(async () => {
+        return JSON.stringify({ status: 'findings', summary: 'Blocked.', findings: [{ id: 'L1', severity: 'blocker', category: 'maintainability', finding: 'Bad layout.' }] });
+      });
+      const deps = makeDeps(undefined, { readFile });
+      deps.policy = { ...deps.policy, max_initial_rounds: 1, convergence: { enabled: true, allow_same_model: true } };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runLayeredImplementation(
+        { run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR },
+        { altitudes: ['layout', 'build'] },
+      );
+      expect(result.status).toBe('failed');
+      // Should not have run the build altitude after layout failed
+      expect(run.gate_exchanges).toHaveLength(1);
+      expect(run.gate_exchanges![0].gate).toBe('layout');
+      expect(run.gate_exchanges![0].converged).toBe(false);
+    });
+  });
 });
