@@ -327,6 +327,32 @@ describe('ImplementationReviewCoordinator', () => {
       expect(captureSession).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
     });
 
+    it('failed session after result-file read throws preserves drain counts and token usage', async () => {
+      // drain completes successfully, then readFile throws — the failed session record
+      // must carry the counts and token usage from the completed drain, not null.
+      const runner: AgentRunner = {
+        run: vi.fn().mockReturnValue((async function* () {
+          yield { type: 'assistant', content: [{ type: 'text', text: 'reviewing' }], tool_call_count: 3, tool_result_count: 3 };
+          yield { type: 'assistant', content: [{ type: 'text', text: 'done' }] };
+          yield { type: 'result', subtype: 'success', session_id: 's1', usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 10, cache_creation_input_tokens: 5 } };
+        })()),
+      };
+      const deps = makeDeps(undefined, {
+        runner,
+        readFile: vi.fn().mockRejectedValue(new Error('ENOENT: no such file')),
+      });
+      const captureSession = vi.fn();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR, captureSession });
+      expect(captureSession).toHaveBeenCalledTimes(1);
+      const record = captureSession.mock.calls[0][0] as Record<string, unknown>;
+      expect(record['outcome']).toBe('failed');
+      expect(record['assistant_turns']).toBe(2);
+      expect(record['tool_calls']).toBe(3);
+      expect(record['tool_results']).toBe(3);
+    });
+
     it('emits one failed session when drainAgentRunner throws — no duplicate', async () => {
       const throwingRunner: AgentRunner = {
         run: vi.fn().mockReturnValue((async function* () {

@@ -250,6 +250,30 @@ describe('SpecReviewCoordinator', () => {
       expect(captureSession).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
     });
 
+    it('failed session after result-file read throws preserves drain counts from completed drain', async () => {
+      // drain completes successfully, then readFile throws — the failed session record
+      // must carry the counts from the completed drain, not null.
+      const runner: AgentRunner = {
+        run: vi.fn().mockReturnValue((async function* () {
+          yield { type: 'assistant', content: [{ type: 'text', text: 'reviewing' }], tool_call_count: 3, tool_result_count: 3 };
+          yield { type: 'assistant', content: [{ type: 'text', text: 'done' }] };
+        })()),
+      };
+      const d = makeDeps({ status: 'no_findings', summary: 'ok', findings: [] }, {
+        runner,
+        readFile: vi.fn().mockRejectedValue(new Error('ENOENT: file not found')),
+      });
+      const captureSession = vi.fn();
+      const coordinator = new SpecReviewCoordinator(d);
+      await coordinator.runSpecReview({ run: makeRun(), artifact_path: ARTIFACT_PATH, working_directory: WORKING_DIR, artifact_kind: 'feature_spec', captureSession });
+      expect(captureSession).toHaveBeenCalledTimes(1);
+      const record = captureSession.mock.calls[0][0] as Record<string, unknown>;
+      expect(record['outcome']).toBe('failed');
+      expect(record['assistant_turns']).toBe(2);
+      expect(record['tool_calls']).toBe(3);
+      expect(record['tool_results']).toBe(3);
+    });
+
     it('emits one failed session when drainAgentRunner throws — no duplicate', async () => {
       const throwingRunner: AgentRunner = {
         run: vi.fn().mockReturnValue((async function* () {

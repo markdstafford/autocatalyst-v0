@@ -131,6 +131,7 @@ export class ImplementationReviewCoordinator {
 
     let reviewResultContent: string;
     let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
+    let drainSummary: AgentDrainSummary | undefined;
     const ts_start = new Date().toISOString();
     try {
       if (onAgentRequest && reviewProfile) {
@@ -154,7 +155,7 @@ export class ImplementationReviewCoordinator {
             }
           : onProgress;
 
-      const drainSummary = await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.deps.runner.run({
           route: { task: routeTask },
           profile: reviewProfile,
@@ -178,7 +179,7 @@ export class ImplementationReviewCoordinator {
       reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
       this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'ok', drainSummary);
     } catch (err) {
-      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'failed', undefined);
+      this.emitSessionRecord(captureSession, reviewProfile, routeTask, ts_start, 'failed', drainSummary);
       this.deps.logger.error(
         {
           event: 'implementation.review.round_failed',

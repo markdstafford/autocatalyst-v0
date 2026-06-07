@@ -117,9 +117,10 @@ export class SpecReviewCoordinator {
 
     let reviewResultContent: string;
     let reviewResult: SpecReviewResult;
+    let drainSummary: AgentDrainSummary | undefined;
     const ts_start = new Date().toISOString();
     try {
-      const drainSummary = await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.deps.runner.run({
           route: { task: 'spec.review', artifact_kind },
           profile: reviewProfile,
@@ -142,7 +143,7 @@ export class SpecReviewCoordinator {
       reviewResult = parseSpecReviewResult(reviewResultContent, reviewResultPath);
       this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'ok', drainSummary);
     } catch (err) {
-      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'failed', undefined);
+      this.emitSessionRecord(captureSession, reviewProfile, ts_start, 'failed', drainSummary);
       return this.handleReviewFailure(run, artifact_path, String(err), onProgress);
     }
 
