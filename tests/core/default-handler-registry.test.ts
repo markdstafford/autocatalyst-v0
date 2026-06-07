@@ -4,7 +4,56 @@ import pino from 'pino';
 import { buildDefaultHandlerRegistry } from '../../src/core/default-handler-registry.js';
 import type { ThreadMessage, InboundEvent } from '../../src/types/events.js';
 import type { Run } from '../../src/types/runs.js';
+import type { ResolvedImplementationConvergencePolicy } from '../../src/core/ai/layered-convergence-policy.js';
 import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN, testChannelBinding } from '../helpers/channel-refs.js';
+
+// Capture the deps passed to each implementation handler's constructor so we can
+// assert that the registry forwards convergencePolicy (the layered-convergence wiring).
+// The factories delegate to the real implementations so existing behavior is unchanged.
+const handlerConstructorDeps = vi.hoisted(() => ({
+  start: [] as Array<{ convergencePolicy?: unknown; budgetWriter?: unknown }>,
+  feedback: [] as Array<{ convergencePolicy?: unknown; budgetWriter?: unknown }>,
+  approval: [] as Array<{ convergencePolicy?: unknown; budgetWriter?: unknown }>,
+}));
+
+vi.mock('../../src/core/handlers/implementation-start-handler.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/core/handlers/implementation-start-handler.js')>();
+  return {
+    ...actual,
+    ImplementationStartHandler: class extends actual.ImplementationStartHandler {
+      constructor(deps: ConstructorParameters<typeof actual.ImplementationStartHandler>[0]) {
+        handlerConstructorDeps.start.push(deps);
+        super(deps);
+      }
+    },
+  };
+});
+
+vi.mock('../../src/core/handlers/implementation-feedback-handler.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/core/handlers/implementation-feedback-handler.js')>();
+  return {
+    ...actual,
+    ImplementationFeedbackHandler: class extends actual.ImplementationFeedbackHandler {
+      constructor(deps: ConstructorParameters<typeof actual.ImplementationFeedbackHandler>[0]) {
+        handlerConstructorDeps.feedback.push(deps);
+        super(deps);
+      }
+    },
+  };
+});
+
+vi.mock('../../src/core/handlers/implementation-approval-handler.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/core/handlers/implementation-approval-handler.js')>();
+  return {
+    ...actual,
+    ImplementationApprovalHandler: class extends actual.ImplementationApprovalHandler {
+      constructor(deps: ConstructorParameters<typeof actual.ImplementationApprovalHandler>[0]) {
+        handlerConstructorDeps.approval.push(deps);
+        super(deps);
+      }
+    },
+  };
+});
 
 function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
@@ -428,5 +477,66 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001/docs/superpowers/plans/implementation-plan.md',
     );
     expect(run.stage).toBe('reviewing_implementation');
+  });
+
+  // Regression guard: layered-diff convergence only runs when the registry forwards
+  // convergencePolicy into the implementation handlers. Before the wiring fix, the
+  // registry never passed convergencePolicy through, so it was always undefined at
+  // runtime and every run fell back to build-only review. These tests assert the
+  // dep actually reaches each handler's constructor; they FAIL against un-wired code.
+  describe('forwards convergencePolicy into implementation handlers', () => {
+    const convergencePolicy: ResolvedImplementationConvergencePolicy = {
+      enabled: true,
+      allow_same_model: false,
+      depth: 'full',
+      feedback_depth: 'full',
+      max_model_sessions_per_run: 24,
+    };
+    const budgetWriter = { append: vi.fn().mockResolvedValue(undefined) };
+
+    it('forwards convergencePolicy to the ImplementationStartHandler (start path)', async () => {
+      handlerConstructorDeps.start.length = 0;
+      const deps = { ...makeDeps(), convergencePolicy, budgetWriter };
+      const registry = buildDefaultHandlerRegistry(deps);
+      const run = makeRun();
+      const event: InboundEvent = { type: 'thread_message', payload: makeFeedback() };
+
+      const handler = registry.resolve({ event_type: 'thread_message', stage: 'reviewing_spec', intent: 'approval' });
+      await handler?.(event, run);
+
+      expect(handlerConstructorDeps.start.length).toBeGreaterThan(0);
+      expect(handlerConstructorDeps.start.at(-1)?.convergencePolicy).toBe(convergencePolicy);
+      expect(handlerConstructorDeps.start.at(-1)?.budgetWriter).toBe(budgetWriter);
+    });
+
+    it('forwards convergencePolicy to the ImplementationFeedbackHandler (feedback path)', async () => {
+      handlerConstructorDeps.feedback.length = 0;
+      const deps = { ...makeDeps(), convergencePolicy, budgetWriter };
+      const registry = buildDefaultHandlerRegistry(deps);
+      const run = makeRun({ stage: 'reviewing_implementation' });
+      const event: InboundEvent = { type: 'thread_message', payload: makeFeedback({ content: 'please change X' }) };
+
+      const handler = registry.resolve({ event_type: 'thread_message', stage: 'reviewing_implementation', intent: 'feedback' });
+      await handler?.(event, run);
+
+      expect(handlerConstructorDeps.feedback.length).toBeGreaterThan(0);
+      expect(handlerConstructorDeps.feedback.at(-1)?.convergencePolicy).toBe(convergencePolicy);
+      expect(handlerConstructorDeps.feedback.at(-1)?.budgetWriter).toBe(budgetWriter);
+    });
+
+    it('forwards convergencePolicy to the ImplementationApprovalHandler (approval path)', async () => {
+      handlerConstructorDeps.approval.length = 0;
+      const deps = { ...makeDeps(), convergencePolicy, budgetWriter };
+      const registry = buildDefaultHandlerRegistry(deps);
+      const run = makeRun({ stage: 'reviewing_implementation' });
+      const event: InboundEvent = { type: 'thread_message', payload: makeFeedback() };
+
+      const handler = registry.resolve({ event_type: 'thread_message', stage: 'reviewing_implementation', intent: 'approval' });
+      await handler?.(event, run);
+
+      expect(handlerConstructorDeps.approval.length).toBeGreaterThan(0);
+      expect(handlerConstructorDeps.approval.at(-1)?.convergencePolicy).toBe(convergencePolicy);
+      expect(handlerConstructorDeps.approval.at(-1)?.budgetWriter).toBe(budgetWriter);
+    });
   });
 });

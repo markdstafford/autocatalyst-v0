@@ -53,7 +53,9 @@ import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, Ag
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 import { ImplementationReviewCoordinator } from '../core/ai/implementation-review-coordinator.js';
+import { resolveImplementationConvergencePolicy } from '../core/ai/layered-convergence-policy.js';
 import { SpecReviewCoordinator } from '../core/ai/spec-review-coordinator.js';
+import type { BudgetWriter } from '../core/journal/model-session-budget.js';
 import { createLogger } from '../core/logger.js';
 import { WorkspacePruner } from '../core/workspace-pruner.js';
 import { CommandConfirmationRegistryImpl } from '../core/command-confirmations.js';
@@ -157,13 +159,17 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   const workspaceManager = new WorkspaceManagerImpl();
 
   let journal: RunJournal;
+  let budgetWriter: BudgetWriter;
   if (normalizedConfig.journal_enabled) {
     logger.info({ event: 'journal.writer_started' }, 'Journal enabled');
     const writer = new JsonlJournalWriter(workspaceRoot);
     journal = new RunJournal(writer);
+    budgetWriter = writer;
   } else {
     logger.info({ event: 'journal.disabled' }, 'Journal disabled');
-    journal = new RunJournal(new NoopJournalWriter());
+    const writer = new NoopJournalWriter();
+    journal = new RunJournal(writer);
+    budgetWriter = writer;
   }
 
   const runStore = new FileRunStore(workspaceRoot, {
@@ -203,6 +209,8 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     logger,
   });
 
+  const convergencePolicy = resolveImplementationConvergencePolicy(currentConfig.config);
+
   const specReviewCoordinator = new SpecReviewCoordinator({
     runner: agentRunner,
     artifactAuthoringAgent,
@@ -237,6 +245,8 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     channelRepoMap,
     reacjiComplete,
     reviewCoordinator,
+    convergencePolicy,
+    budgetWriter,
     specReviewCoordinator,
     threadPruner,
     workspacePruner,
