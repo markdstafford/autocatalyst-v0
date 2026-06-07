@@ -29,7 +29,7 @@ describe('AnthropicDirectModelRunner', () => {
       profile: { id: 'intent', provider: 'anthropic', model: 'claude-haiku-4-5', effort: 'low' },
       max_tokens: 20,
       messages: [{ role: 'user', content: 'classify this' }],
-    })).resolves.toEqual({ text: 'question', raw: { content: [{ type: 'text', text: 'question' }] } });
+    })).resolves.toEqual({ text: 'question', raw: { content: [{ type: 'text', text: 'question' }] }, usage: null, runner: 'anthropic_direct' });
 
     expect(createFn).toHaveBeenCalledWith({
       model: 'claude-haiku-4-5',
@@ -83,6 +83,60 @@ describe('AnthropicDirectModelRunner', () => {
     expect(failLog!['task']).toBe('intent.classify');
     expect(typeof failLog!['error']).toBe('string');
     expect(failLog!['error'] as string).toContain('API timeout');
+  });
+
+  test('returns normalized usage when provider returns usage data', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'answer' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    const runner = new AnthropicDirectModelRunner('test-key', { createFn });
+
+    const result = await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'intent', provider: 'anthropic', model: 'claude-haiku-4-5', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+
+    expect(result.usage).toEqual({ input: 10, output: 5, cache_read: 0, cache_write: 0 });
+    expect(result.runner).toBe('anthropic_direct');
+  });
+
+  test('returns usage: null when provider returns no usage', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'answer' }],
+    });
+    const runner = new AnthropicDirectModelRunner('test-key', { createFn });
+
+    const result = await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'intent', provider: 'anthropic', model: 'claude-haiku-4-5', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+
+    expect(result.usage).toBeNull();
+    expect(result.runner).toBe('anthropic_direct');
+  });
+
+  test('maps cache fields correctly from Anthropic usage', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'answer' }],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: 80,
+        cache_creation_input_tokens: 20,
+      },
+    });
+    const runner = new AnthropicDirectModelRunner('test-key', { createFn });
+
+    const result = await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'intent', provider: 'anthropic', model: 'claude-haiku-4-5', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+
+    expect(result.usage).toEqual({ input: 100, output: 50, cache_read: 80, cache_write: 20 });
   });
 
   test('logs null for input_tokens and output_tokens when usage is absent', async () => {

@@ -4,12 +4,20 @@ import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { performance } from 'node:perf_hooks';
 import { createLogger } from '../../core/logger.js';
 import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner } from '../../types/ai.js';
+import type { NormalizedTokenUsage } from '../../types/journal.js';
 
 export type OpenAIChatCompletionFn = (params: {
   model: string;
   max_completion_tokens: number;
   messages: Array<{ role: 'user'; content: string }>;
-}) => Promise<{ choices: Array<{ message: { content: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } }>;
+}) => Promise<{
+  choices: Array<{ message: { content: string | null } }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
+}>;
 
 export interface OpenAIDirectModelRunnerOptions {
   createFn?: OpenAIChatCompletionFn;
@@ -36,7 +44,7 @@ export class OpenAIDirectModelRunner implements DirectModelRunner {
       }
       const client = new OpenAI(clientOptions);
       this.createFn = params =>
-        client.chat.completions.create(params) as Promise<{ choices: Array<{ message: { content: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } }>;
+        client.chat.completions.create(params) as Promise<{ choices: Array<{ message: { content: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }>;
     }
     this.defaultModel = options?.defaultModel;
     this.logger = createLogger('openai-direct-model-runner', {
@@ -70,9 +78,19 @@ export class OpenAIDirectModelRunner implements DirectModelRunner {
         },
         'Model run completed',
       );
+      const normalizedUsage: NormalizedTokenUsage | null = raw.usage
+        ? {
+            input: raw.usage.prompt_tokens ?? 0,
+            output: raw.usage.completion_tokens ?? 0,
+            cache_read: raw.usage.prompt_tokens_details?.cached_tokens ?? 0,
+            cache_write: 0,
+          }
+        : null;
       return {
         text: raw.choices[0]?.message.content ?? '',
         raw,
+        usage: normalizedUsage,
+        runner: 'openai_direct',
       };
     } catch (err) {
       this.logger.error(
