@@ -16,6 +16,11 @@ import {
   isWorkspaceAutoPruneEnabled,
 } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
+import {
+  altitudesForDepth,
+  resolveFeedbackDepth,
+  resolveImplementationConvergencePolicy,
+} from '../../src/core/ai/layered-convergence-policy.js';
 
 const fixture = (name: string) =>
   readFileSync(join(import.meta.dirname, '../fixtures', name), 'utf-8');
@@ -640,5 +645,65 @@ describe('isWorkspaceAutoPruneEnabled', () => {
 
   it('returns false when set to false', () => {
     expect(isWorkspaceAutoPruneEnabled({ workspace: { auto_prune: false } } as WorkflowConfig)).toBe(false);
+  });
+});
+
+// ─── implementation_review.convergence layered config ─────────────────────────
+
+function baseConfig(overrides: Partial<WorkflowConfig> = {}): WorkflowConfig {
+  return {
+    ai: { credentials: [], endpoints: [], profiles: [], routing: {} },
+    ...overrides,
+  } as WorkflowConfig;
+}
+
+describe('implementation_review.convergence layered config', () => {
+  it('resolves missing convergence config to disabled build-only defaults', () => {
+    const policy = resolveImplementationConvergencePolicy(baseConfig());
+    expect(policy).toEqual({
+      enabled: false,
+      allow_same_model: false,
+      depth: 'build_only',
+      feedback_depth: 'build_only',
+      max_model_sessions_per_run: 24,
+    });
+  });
+
+  it.each([
+    ['build_only', ['build']],
+    ['layout', ['layout', 'build']],
+    ['public_api', ['layout', 'public_api', 'build']],
+    ['full', ['layout', 'public_api', 'private_api', 'build']],
+  ] as const)('maps depth %s to ordered altitudes', (depth, expected) => {
+    expect(altitudesForDepth(depth)).toEqual(expected);
+  });
+
+  it('resolves feedback_depth inherit to the initial depth', () => {
+    expect(resolveFeedbackDepth('inherit', 'full')).toBe('full');
+    expect(resolveFeedbackDepth(undefined, 'public_api')).toBe('build_only');
+  });
+
+  it('rejects invalid depth with clear error', () => {
+    expect(() => validateConfig({
+      ...baseConfig(),
+      implementation_review: {
+        convergence: {
+          enabled: true,
+          depth: 'wrong-depth' as never,
+        },
+      },
+    })).toThrow('implementation_review.convergence.depth must be one of');
+  });
+
+  it('rejects invalid max_model_sessions_per_run with clear error', () => {
+    expect(() => validateConfig({
+      ...baseConfig(),
+      implementation_review: {
+        convergence: {
+          enabled: true,
+          max_model_sessions_per_run: 0,
+        },
+      },
+    })).toThrow('implementation_review.convergence.max_model_sessions_per_run must be a positive integer');
   });
 });

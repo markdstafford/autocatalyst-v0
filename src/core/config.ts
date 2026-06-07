@@ -194,6 +194,20 @@ export function validateConfig(config: WorkflowConfig): void {
       if (convergence['allow_same_model'] !== undefined && typeof convergence['allow_same_model'] !== 'boolean') {
         throw new Error('implementation_review.convergence.allow_same_model must be a boolean');
       }
+      const validDepths = ['build_only', 'layout', 'public_api', 'full'];
+      const validFeedbackDepths = [...validDepths, 'inherit'];
+      if (convergence['depth'] !== undefined && !validDepths.includes(String(convergence['depth']))) {
+        throw new Error('implementation_review.convergence.depth must be one of build_only, layout, public_api, full');
+      }
+      if (convergence['feedback_depth'] !== undefined && !validFeedbackDepths.includes(String(convergence['feedback_depth']))) {
+        throw new Error('implementation_review.convergence.feedback_depth must be one of build_only, layout, public_api, full, inherit');
+      }
+      if (convergence['max_model_sessions_per_run'] !== undefined) {
+        const value = convergence['max_model_sessions_per_run'];
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+          throw new Error('implementation_review.convergence.max_model_sessions_per_run must be a positive integer');
+        }
+      }
     }
   }
 
